@@ -1,0 +1,2160 @@
+from __future__ import annotations
+
+import io
+import os
+import re
+import shutil
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfgen import canvas
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+try:
+    import holidays
+except ImportError:  # pragma: no cover - app keeps working without holiday package.
+    holidays = None
+
+
+APP_TITLE = "Venta diaria HL"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR_CANDIDATES = [
+    Path(os.environ.get("DASHBOARDS_ROOT", "N:/Tomas/DASHBOARDS")) / "planificacion",
+    Path("N:/tomas/dashboards/planificacion"),
+    Path.home() / "Desktop" / "planificacion",
+]
+VALID_EXTENSIONS = {".txt", ".csv"}
+CLIENT_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
+WINDOWS = (7, 14, 21, 28)
+EXACT_MONTH_LOOKBACKS = (1, 2, 3)
+NORMALIZATION_VERSION = 4
+CUSTOMER_CHANNEL_VERSION = 2
+SEGMENT_VERSION = 1
+CANAL_ORDER = ["K+T", "AUTOSERVICIO", "MAYORISTA", "REF", "NO"]
+DIVISION_REPORT_ORDER = [
+    "TOTAL CVZA",
+    "TOTAL UNG",
+    "CVZA CORE",
+    "CVZA VALUE",
+    "CVZA CORE +",
+    "CVZA HE",
+    "UNG SIN TOP",
+    "UNG TOP",
+    "AGUAS ECO",
+    "VINO",
+    "ADYACENCIAS",
+]
+REPORT_TOTAL_UNITS = {"CZA", "UNG", "AGUAS ECO", "VINO", "ADYACENCIAS"}
+DEFAULT_OBJECTIVES_ROWS = [
+    {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": 4060.0},
+    {"seccion": "", "item": "TOTAL UNG", "OBJ VTAS": 3098.0},
+    {"seccion": "", "item": "CZA", "OBJ VTAS": 4060.0},
+    {"seccion": "", "item": "UNG", "OBJ VTAS": 3098.0},
+    {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": 267.0},
+    {"seccion": "", "item": "VINO", "OBJ VTAS": 41.0},
+    {"seccion": "", "item": "ADYACENCIAS", "OBJ VTAS": 0.48},
+]
+PROMOTER_MESA_MAP = {
+    "NICASTRO LUCAS": "ismael bruno",
+    "SIRI MARTIN": "ismael bruno",
+    "MATIAS GARCIA": "ismael bruno",
+    "GASTON FABRE": "ismael bruno",
+    "NICOLAS POCHETINO": "ismael bruno",
+    "VILLAGRA ENZO": "ismael bruno",
+    "FEDERICO BISS": "anibal viti",
+    "PABLO ALVAREZ": "casco hernan",
+    "ALEXANDER ROJAS": "casco hernan",
+    "FERNANDO FIELG": "casco hernan",
+    "JUAN MANUEL GIMENEZ": "casco hernan",
+    "MENDEZ CARLOS": "casco hernan",
+    "MARIANO HERRERA": "casco hernan",
+}
+
+
+def secret_or_env(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    return str(value or os.environ.get(name, default)).strip()
+
+
+def truthy(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "y"}
+
+
+def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | None:
+    url = secret_or_env(secret_name)
+    if not url:
+        return None
+
+    target = PROJECT_ROOT / ".cloud_data" / folder_name
+    refresh = truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
+    has_files = target.exists() and any(target.iterdir())
+    if has_files and not refresh:
+        return target
+
+    try:
+        import gdown
+    except ImportError:
+        st.sidebar.warning("Falta instalar gdown para leer datos desde Google Drive.")
+        return None
+
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        gdown.download_folder(url=url, output=str(target), quiet=True, use_cookies=False)
+    except Exception as exc:
+        st.sidebar.warning(f"No pude descargar la carpeta de Google Drive: {exc}")
+        return None
+
+    return target if target.exists() and any(target.iterdir()) else None
+
+
+DEFAULT_DATA_DIR = (
+    resolve_google_drive_folder("GOOGLE_DRIVE_PLANIFICACION_URL", "planificacion")
+    or next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
+)
+
+
+@dataclass(frozen=True)
+class SourceInfo:
+    label: str
+    path: str | None
+    modified: str | None
+
+
+def excel_col_to_index(letter: str) -> int:
+    value = 0
+    for char in letter.upper():
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    return value - 1
+
+
+def page_setup() -> None:
+    st.set_page_config(page_title=APP_TITLE, page_icon=":bar_chart:", layout="wide")
+    st.markdown(
+        """
+        <style>
+        :root {
+            --bg: #f5f7fb;
+            --ink: #101828;
+            --muted: #667085;
+            --blue: #1463ff;
+            --cyan: #00a7c8;
+            --green: #12b76a;
+            --orange: #f79009;
+            --red: #f04438;
+            --violet: #7a5af8;
+            --card: rgba(255,255,255,.92);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at 12% 8%, rgba(20, 99, 255, .13), transparent 28%),
+                radial-gradient(circle at 88% 6%, rgba(18, 183, 106, .13), transparent 24%),
+                linear-gradient(180deg, #f8fbff 0%, var(--bg) 42%, #eef3fb 100%);
+            color: var(--ink);
+        }
+        .stApp, .stApp p, .stApp span, .stApp label, .stApp div {
+            color: var(--ink);
+        }
+        .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #172554 100%);
+        }
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] small,
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+            color: #f8fafc !important;
+        }
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] textarea,
+        [data-testid="stSidebar"] [data-baseweb="select"] *,
+        [data-testid="stSidebar"] [data-baseweb="input"] * {
+            color: #111827 !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] [data-baseweb="input"],
+        [data-testid="stSidebar"] [data-baseweb="base-input"],
+        [data-testid="stSidebar"] .stDateInput input,
+        [data-testid="stSidebar"] .stMultiSelect div,
+        [data-testid="stSidebar"] .stSelectbox div {
+            background-color: #ffffff !important;
+            color: #111827 !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"] input,
+        [data-testid="stSidebar"] [data-baseweb="select"] span,
+        [data-testid="stSidebar"] [data-baseweb="input"] input,
+        [data-testid="stSidebar"] .stDateInput input {
+            color: #111827 !important;
+            -webkit-text-fill-color: #111827 !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="select"] svg,
+        [data-testid="stSidebar"] [data-baseweb="input"] svg {
+            color: #334155 !important;
+            fill: #334155 !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="tag"] {
+            background-color: #1463ff !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="tag"] span {
+            color: #ffffff !important;
+        }
+        [data-baseweb="popover"] *,
+        [role="listbox"] * {
+            color: #111827 !important;
+        }
+        [data-baseweb="popover"],
+        [data-baseweb="popover"] > div,
+        [role="listbox"],
+        [role="option"] {
+            background-color: #ffffff !important;
+        }
+        [role="option"],
+        [role="option"] *,
+        [data-baseweb="menu"] *,
+        [data-baseweb="popover"] li,
+        [data-baseweb="popover"] li * {
+            color: #111827 !important;
+            -webkit-text-fill-color: #111827 !important;
+        }
+        [role="option"]:hover,
+        [role="option"][aria-selected="true"] {
+            background-color: #dbeafe !important;
+        }
+        [data-baseweb="select"] div[aria-selected="true"],
+        [data-baseweb="select"] div[role="option"] {
+            color: #111827 !important;
+            -webkit-text-fill-color: #111827 !important;
+        }
+        [data-testid="stSidebar"] .stButton button {
+            background: #22c55e;
+            color: #052e16 !important;
+            border: 0;
+            font-weight: 800;
+        }
+        h1, h2, h3 { letter-spacing: 0; }
+        .hero {
+            padding: 22px 26px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #102a6b 0%, #1463ff 52%, #00a7c8 100%);
+            color: white;
+            box-shadow: 0 18px 45px rgba(16, 42, 107, .22);
+            margin-bottom: 18px;
+        }
+        .hero h1 { margin: 0; font-size: 2.1rem; line-height: 1.1; }
+        .hero p { margin: 8px 0 0; color: rgba(255,255,255,.88); font-size: 1rem; }
+        .metric-card {
+            min-height: 132px;
+            padding: 18px 18px 16px;
+            border-radius: 8px;
+            background: var(--card);
+            border: 1px solid rgba(20, 99, 255, .10);
+            box-shadow: 0 14px 30px rgba(15, 23, 42, .10);
+        }
+        .metric-title {
+            color: var(--muted);
+            text-transform: uppercase;
+            font-size: .74rem;
+            font-weight: 800;
+            letter-spacing: .05em;
+            margin-bottom: 6px;
+        }
+        .metric-value {
+            color: var(--ink);
+            font-size: 2rem;
+            line-height: 1.1;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+        .metric-sub {
+            color: var(--muted);
+            font-size: .85rem;
+            margin-top: 8px;
+        }
+        .business-card {
+            min-height: 156px;
+            padding: 20px 22px;
+            border-radius: 8px;
+            color: white;
+            box-shadow: 0 18px 36px rgba(15, 23, 42, .18);
+        }
+        .business-card * { color: white !important; }
+        .business-cza {
+            background: linear-gradient(135deg, #075985 0%, #1463ff 58%, #00a7c8 100%);
+        }
+        .business-ung {
+            background: linear-gradient(135deg, #065f46 0%, #12b76a 60%, #84cc16 100%);
+        }
+        .business-title {
+            font-size: .82rem;
+            font-weight: 850;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            opacity: .9;
+        }
+        .business-value {
+            font-size: 2.5rem;
+            line-height: 1.05;
+            font-weight: 900;
+            margin-top: 8px;
+            white-space: nowrap;
+        }
+        .business-sub {
+            margin-top: 10px;
+            font-size: .95rem;
+            opacity: .92;
+        }
+        .accent-blue { border-top: 5px solid var(--blue); }
+        .accent-green { border-top: 5px solid var(--green); }
+        .accent-orange { border-top: 5px solid var(--orange); }
+        .accent-violet { border-top: 5px solid var(--violet); }
+        .accent-red { border-top: 5px solid var(--red); }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 8px;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, .08);
+        }
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] {
+            border-radius: 8px;
+            background: #dbeafe;
+            padding: 10px 16px;
+            border: 1px solid rgba(20, 99, 255, .18);
+        }
+        .stTabs [data-baseweb="tab"] p {
+            color: #12356f !important;
+            font-weight: 800;
+        }
+        .stTabs [aria-selected="true"] {
+            background: #1463ff !important;
+            border-color: #1463ff !important;
+        }
+        .stTabs [aria-selected="true"] p {
+            color: #ffffff !important;
+        }
+        .exec-wrap {
+            background: #ffffff;
+            border: 1px solid #111827;
+            border-radius: 6px;
+            padding: 10px;
+            margin: 10px 0 28px;
+            overflow-x: auto;
+            box-shadow: 0 10px 22px rgba(15, 23, 42, .08);
+        }
+        .exec-title {
+            font-weight: 900;
+            color: #111827 !important;
+            margin: 4px 0 8px;
+            text-transform: uppercase;
+        }
+        table.exec-table {
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 760px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+        table.exec-table th {
+            background: #28549a;
+            color: #ffffff !important;
+            border: 1px solid #111827;
+            padding: 5px 7px;
+            text-align: center;
+            font-weight: 900;
+        }
+        table.exec-table td {
+            border: 1px solid #111827;
+            padding: 4px 7px;
+            text-align: right;
+            color: #111827 !important;
+            background: #ffffff;
+            font-weight: 700;
+        }
+        table.exec-table td:first-child {
+            background: #2f5ea8;
+            color: #ffffff !important;
+            text-align: center;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        table.exec-table tr.total-row td {
+            font-weight: 950;
+            background: #f8fafc;
+        }
+        table.exec-table tr.total-row td:first-child {
+            background: #214986;
+            color: #ffffff !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def strip_accents(value: str) -> str:
+    return "".join(
+        char
+        for char in unicodedata.normalize("NFKD", str(value))
+        if not unicodedata.combining(char)
+    )
+
+
+def clean_name(value: str) -> str:
+    value = strip_accents(value).strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return re.sub(r"_+", "_", value).strip("_")
+
+
+def make_unique_columns(columns: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    result = []
+    for column in columns:
+        base = clean_name(column) or "columna"
+        seen[base] = seen.get(base, 0) + 1
+        result.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    return result
+
+
+def latest_file_in_folder(folder: Path) -> Path | None:
+    return latest_daily_file_in_folder(folder)
+
+
+def latest_matching_file(folder: Path, include_terms: tuple[str, ...], exclude_terms: tuple[str, ...] = ()) -> Path | None:
+    if not folder.exists():
+        return None
+    include_terms = tuple(clean_name(term) for term in include_terms)
+    exclude_terms = tuple(clean_name(term) for term in exclude_terms)
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in VALID_EXTENSIONS
+        and all(term in clean_name(path.stem) for term in include_terms)
+        and not any(term in clean_name(path.stem) for term in exclude_terms)
+    ]
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def latest_daily_file_in_folder(folder: Path) -> Path | None:
+    preferred = latest_matching_file(folder, ("venta",), ("anual",))
+    if preferred is not None:
+        return preferred
+    return latest_matching_file(folder, tuple(), ("anual",))
+
+
+def latest_annual_file_in_folder(folder: Path) -> Path | None:
+    return latest_matching_file(folder, ("anual",))
+
+
+def latest_customer_file_in_folder(folder: Path) -> Path | None:
+    if not folder.exists():
+        return None
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and path.suffix.lower() in CLIENT_EXTENSIONS
+        and any(term in clean_name(path.stem) for term in ("cliente", "clientes"))
+    ]
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def latest_objectives_file_in_folder(folder: Path) -> Path | None:
+    if not folder.exists():
+        return None
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and path.suffix.lower() in CLIENT_EXTENSIONS
+        and "objet" in clean_name(path.stem)
+    ]
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def latest_auxiliary_file_in_folder(folder: Path) -> Path | None:
+    if not folder.exists():
+        return None
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and path.suffix.lower() in CLIENT_EXTENSIONS
+        and "auxiliar" in clean_name(path.stem)
+    ]
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def parse_argentine_number(series: pd.Series) -> pd.Series:
+    text = (
+        series.astype("string")
+        .str.strip()
+        .str.replace("%", "", regex=False)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .str.replace(r"[^0-9.\-]", "", regex=True)
+    )
+    return pd.to_numeric(text, errors="coerce")
+
+
+def parse_period_date(raw: pd.Series) -> pd.Series:
+    month_map = {
+        "ene": "jan",
+        "feb": "feb",
+        "mar": "mar",
+        "abr": "apr",
+        "may": "may",
+        "jun": "jun",
+        "jul": "jul",
+        "ago": "aug",
+        "sep": "sep",
+        "set": "sep",
+        "oct": "oct",
+        "nov": "nov",
+        "dic": "dec",
+    }
+
+    text = raw.astype("string").str.strip().str.lower()
+    text = text.str.replace(r"^\(\d+\)\s*", "", regex=True)
+    for spanish, english in month_map.items():
+        text = text.str.replace(fr"\b{spanish}\b", english, regex=True)
+    parsed = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+    for date_format in ("%d-%b-%y", "%d-%b-%Y", "%d %b %y", "%d %b %Y", "%d/%m/%y", "%d/%m/%Y"):
+        missing = parsed.isna()
+        if not missing.any():
+            break
+        parsed.loc[missing] = pd.to_datetime(text.loc[missing], format=date_format, errors="coerce")
+    if parsed.isna().any():
+        parsed.loc[parsed.isna()] = pd.to_datetime(text.loc[parsed.isna()], errors="coerce", dayfirst=True)
+    return parsed.dt.normalize()
+
+
+def col_by_position(df: pd.DataFrame, letter: str) -> pd.Series:
+    index = excel_col_to_index(letter)
+    if index >= len(df.columns):
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+    return df.iloc[:, index]
+
+
+def first_present(df: pd.DataFrame, names: list[str], fallback_letter: str | None = None) -> pd.Series:
+    for name in names:
+        if name in df.columns:
+            return df[name]
+    if fallback_letter:
+        return col_by_position(df, fallback_letter)
+    return pd.Series(pd.NA, index=df.index, dtype="object")
+
+
+def mesa_from_promoter(series: pd.Series) -> pd.Series:
+    names = series.fillna("").astype(str).str.strip().str.upper()
+    return names.map(PROMOTER_MESA_MAP).fillna("Sin mesa")
+
+
+@st.cache_data(show_spinner=False)
+def load_source_from_path(
+    path_text: str,
+    modified_ns: int,
+    normalization_version: int = NORMALIZATION_VERSION,
+) -> tuple[pd.DataFrame, SourceInfo]:
+    path = Path(path_text)
+    raw = read_tabular(path)
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return normalize(raw), info
+
+
+@st.cache_data(show_spinner=False)
+def load_annual_source_from_path(
+    path_text: str,
+    modified_ns: int,
+    normalization_version: int = NORMALIZATION_VERSION,
+) -> tuple[pd.DataFrame, SourceInfo]:
+    path = Path(path_text)
+    raw = read_tabular(path)
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return normalize(raw), info
+
+
+@st.cache_data(show_spinner=False)
+def load_source_from_upload(
+    name: str,
+    content: bytes,
+    normalization_version: int = NORMALIZATION_VERSION,
+) -> tuple[pd.DataFrame, SourceInfo]:
+    raw = read_tabular(io.BytesIO(content))
+    info = SourceInfo(label=name, path=None, modified=None)
+    return normalize(raw), info
+
+
+def read_tabular(source: str | Path | io.BytesIO) -> pd.DataFrame:
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "cp1252", "latin1"):
+        try:
+            if hasattr(source, "seek"):
+                source.seek(0)
+            return pd.read_csv(
+                source,
+                sep="\t",
+                dtype="string",
+                encoding=encoding,
+                engine="python",
+            )
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise RuntimeError(f"No pude detectar la codificacion del archivo: {last_error}")
+
+
+def classify_customer_channel(value: str | None) -> str:
+    text = strip_accents("" if value is None else str(value)).upper()
+    if "AUTOSERV" in text:
+        return "AUTOSERVICIO"
+    if "MAYOR" in text:
+        return "MAYORISTA"
+    if "REFRIG" in text:
+        return "REF"
+    if any(term in text for term in ("TRADICIONAL", "KIOSCO", "CADENITA", "LISTA UNICA")):
+        return "K+T"
+    return "NO"
+
+
+@st.cache_data(show_spinner=False)
+def load_customer_channels(
+    path_text: str,
+    modified_ns: int,
+    customer_channel_version: int = CUSTOMER_CHANNEL_VERSION,
+) -> tuple[pd.DataFrame, SourceInfo]:
+    path = Path(path_text)
+    if path.suffix.lower() in {".xlsx", ".xls"}:
+        excel = pd.ExcelFile(path)
+        customers = pd.read_excel(path, sheet_name="Clientes", header=1, dtype="string")
+        price_lists = pd.read_excel(path, sheet_name="Listas de precios", header=1, dtype="string")
+        hierarchy_sheet = next((sheet for sheet in excel.sheet_names if "Jerarqu" in sheet), None)
+        hierarchy = (
+            pd.read_excel(path, sheet_name=hierarchy_sheet, header=1, dtype="string")
+            if hierarchy_sheet
+            else pd.DataFrame()
+        )
+    else:
+        customers = read_tabular(path)
+        price_lists = pd.DataFrame(columns=["Código", "Descripción"])
+        hierarchy = pd.DataFrame()
+
+    customers = customers[customers.get("Cliente").notna()].copy()
+    customers = customers[customers["Cliente"].astype(str).str.upper() != "ENTERO"]
+    customers["cliente_codigo"] = pd.to_numeric(customers["Cliente"], errors="coerce").astype("Int64").astype("string")
+    customers["lista_precio_codigo"] = pd.to_numeric(customers.get("Lista de precios"), errors="coerce").astype("Int64").astype("string")
+    customers["subcanal_mkt_codigo"] = pd.to_numeric(customers.get("Subcanal MKT"), errors="coerce").astype("Int64").astype("string")
+
+    if not price_lists.empty and {"Código", "Descripción"}.issubset(price_lists.columns):
+        price_lists = price_lists[price_lists["Código"].notna()].copy()
+        price_lists["lista_precio_codigo"] = pd.to_numeric(price_lists["Código"], errors="coerce").astype("Int64").astype("string")
+        price_lists = price_lists[["lista_precio_codigo", "Descripción"]].rename(
+            columns={"Descripción": "lista_precio_descripcion"}
+        )
+        customers = customers.merge(price_lists, on="lista_precio_codigo", how="left")
+    else:
+        customers["lista_precio_descripcion"] = customers["lista_precio_codigo"]
+
+    if not hierarchy.empty and {"Código", "Segmento MKT", "Canal MKT", "Subcanal MKT"}.issubset(hierarchy.columns):
+        hierarchy = hierarchy[hierarchy["Código"].notna()].copy()
+        hierarchy["subcanal_mkt_codigo"] = pd.to_numeric(hierarchy["Código"], errors="coerce").astype("Int64").astype("string")
+        hierarchy = hierarchy[
+            ["subcanal_mkt_codigo", "Segmento MKT", "Canal MKT", "Subcanal MKT"]
+        ].rename(
+            columns={
+                "Segmento MKT": "segmento_mkt",
+                "Canal MKT": "canal_mkt",
+                "Subcanal MKT": "subcanal_mkt",
+            }
+        )
+        customers = customers.merge(hierarchy, on="subcanal_mkt_codigo", how="left")
+    else:
+        customers["segmento_mkt"] = ""
+        customers["canal_mkt"] = ""
+        customers["subcanal_mkt"] = ""
+
+    channel_text = (
+        customers["lista_precio_descripcion"].fillna("")
+        + " "
+        + customers["segmento_mkt"].fillna("")
+        + " "
+        + customers["canal_mkt"].fillna("")
+        + " "
+        + customers["subcanal_mkt"].fillna("")
+    )
+    customers["canal_maestro"] = channel_text.apply(classify_customer_channel)
+    result = customers[
+        ["cliente_codigo", "canal_maestro", "lista_precio_descripcion", "segmento_mkt", "canal_mkt", "subcanal_mkt"]
+    ].drop_duplicates("cliente_codigo")
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return result, info
+
+
+def apply_customer_channels(df: pd.DataFrame, customer_channels: pd.DataFrame | None) -> pd.DataFrame:
+    if customer_channels is None or customer_channels.empty or "cliente_codigo" not in df.columns:
+        return df
+    result = df.copy()
+    result["cliente_codigo"] = pd.to_numeric(result["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    result = result.merge(customer_channels, on="cliente_codigo", how="left")
+    result["canal"] = result["canal_maestro"].fillna("NO")
+    result["lista_precio_descripcion"] = result["lista_precio_descripcion"].fillna("Sin lista")
+    for column in ["segmento_mkt", "canal_mkt", "subcanal_mkt"]:
+        if column in result.columns:
+            result[column] = result[column].fillna("Sin dato")
+    return result.drop(columns=["canal_maestro"])
+
+
+def key_text(value: str | None) -> str:
+    return strip_accents("" if value is None or pd.isna(value) else str(value)).upper().strip()
+
+
+def normalize_beer_segment(value: str | None) -> str:
+    text = key_text(value)
+    if text == "CORE PLUS":
+        return "CVZA CORE +"
+    if text == "VALUE":
+        return "CVZA VALUE"
+    if text == "HE":
+        return "CVZA HE"
+    if text == "CORE":
+        return "CVZA CORE"
+    return "CVZA SIN SEGMENTO"
+
+
+@st.cache_data(show_spinner=False)
+def load_auxiliary_segments(
+    path_text: str,
+    modified_ns: int,
+    segment_version: int = SEGMENT_VERSION,
+) -> tuple[dict[str, pd.DataFrame], SourceInfo]:
+    path = Path(path_text)
+    aux = pd.read_excel(path, sheet_name="PIVOT", dtype="string")
+
+    beer = aux[["MARCA", "SEGMENTO"]].dropna(subset=["MARCA"]).copy()
+    beer["marca_key"] = beer["MARCA"].apply(key_text)
+    beer["segmento_cerveza"] = beer["SEGMENTO"].apply(normalize_beer_segment)
+    beer = beer[["marca_key", "segmento_cerveza"]].drop_duplicates("marca_key")
+
+    ung = aux[["Marca", "Calibre", "UNG TOP"]].dropna(subset=["Marca", "Calibre"]).copy()
+    ung["marca_key"] = ung["Marca"].apply(key_text)
+    ung["calibre_key"] = ung["Calibre"].apply(key_text)
+    ung["segmento_ung"] = np.where(
+        ung["UNG TOP"].fillna("").astype(str).str.upper().str.contains("UNG TOP"),
+        "UNG TOP",
+        "UNG SIN TOP",
+    )
+    ung = ung[["marca_key", "calibre_key", "segmento_ung"]].drop_duplicates(["marca_key", "calibre_key"])
+
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return {"beer": beer, "ung": ung}, info
+
+
+def apply_auxiliary_segments(df: pd.DataFrame, aux_segments: dict[str, pd.DataFrame] | None) -> pd.DataFrame:
+    result = df.copy()
+    result["division_informe"] = result.get("unidad_negocio", pd.Series("Sin negocio", index=result.index)).astype(str)
+    if aux_segments is None:
+        result.loc[result["unidad_negocio"] == "CZA", "division_informe"] = "CVZA SIN SEGMENTO"
+        result.loc[result["unidad_negocio"] == "UNG", "division_informe"] = "UNG SIN TOP"
+        return result
+
+    result["marca_key"] = result["marca"].apply(key_text) if "marca" in result.columns else ""
+    result["calibre_key"] = result["calibre"].apply(key_text) if "calibre" in result.columns else ""
+
+    beer = aux_segments.get("beer", pd.DataFrame())
+    if not beer.empty:
+        result = result.merge(beer, on="marca_key", how="left")
+        cza_mask = result["unidad_negocio"] == "CZA"
+        result.loc[cza_mask, "division_informe"] = result.loc[cza_mask, "segmento_cerveza"].fillna("CVZA SIN SEGMENTO")
+
+    ung = aux_segments.get("ung", pd.DataFrame())
+    if not ung.empty:
+        result = result.merge(ung, on=["marca_key", "calibre_key"], how="left")
+        ung_mask = result["unidad_negocio"] == "UNG"
+        result.loc[ung_mask, "division_informe"] = result.loc[ung_mask, "segmento_ung"].fillna("UNG SIN TOP")
+
+    result.loc[~result["unidad_negocio"].isin(["CZA", "UNG"]), "division_informe"] = result.loc[
+        ~result["unidad_negocio"].isin(["CZA", "UNG"]), "unidad_negocio"
+    ]
+    return result.drop(columns=[col for col in ["marca_key", "calibre_key", "segmento_cerveza", "segmento_ung"] if col in result.columns])
+
+
+@st.cache_data(show_spinner=False)
+def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
+    path = Path(path_text)
+    if path.suffix.lower() in {".xlsx", ".xls"}:
+        objectives = pd.read_excel(path, dtype="string")
+    else:
+        objectives = read_tabular(path)
+    objectives = objectives.copy()
+    objectives.columns = make_unique_columns(list(objectives.columns))
+
+    section_col = next((col for col in objectives.columns if col in {"seccion", "tabla", "grupo"}), None)
+    item_col = next((col for col in objectives.columns if col in {"item", "division", "mesa", "calibre", "canal"}), None)
+    objective_col = next((col for col in objectives.columns if "objet" in col), None)
+    if item_col is None and len(objectives.columns) >= 1:
+        item_col = objectives.columns[0]
+    if objective_col is None and len(objectives.columns) >= 2:
+        objective_col = objectives.columns[1]
+    if item_col is None or objective_col is None:
+        raise ValueError("El archivo de objetivos debe tener al menos columnas item y objetivo.")
+
+    result = pd.DataFrame(
+        {
+            "seccion": objectives[section_col].fillna("").astype(str).str.strip().str.upper()
+            if section_col
+            else "",
+            "item": objectives[item_col].fillna("").astype(str).str.strip().str.upper(),
+            "OBJ VTAS": parse_argentine_number(objectives[objective_col]),
+        }
+    ).dropna(subset=["OBJ VTAS"])
+
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return result, info
+
+
+def normalize(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.copy()
+    df.columns = make_unique_columns(list(df.columns))
+
+    fecha = parse_period_date(first_present(df, ["descripcion_periodo"], "C"))
+    if fecha.isna().all():
+        fecha = parse_period_date(first_present(df, ["periodos"], "A"))
+
+    normalized = pd.DataFrame(
+        {
+            "fecha": fecha,
+            "periodo_codigo": first_present(df, ["cod_periodo"], "B"),
+            "cliente_codigo": first_present(df, ["cod_cliente"], "E"),
+            "cliente": first_present(df, ["descripcion"], "F"),
+            "ruta_codigo": first_present(df, ["ruta"], "I"),
+            "ruta": first_present(df, ["descripcion_1"], "J"),
+            "vendedor_codigo": first_present(df, ["vendedor"], "O"),
+            "vendedor": first_present(df, ["descripcion_vendedor"], "P"),
+            "marca": first_present(df, ["descripcion_3"], "U"),
+            "calibre": col_by_position(df, "X"),
+            "division_codigo": first_present(df, ["division"], "Z"),
+            "division": first_present(df, ["descripcion_5"], "AA"),
+            "canal_codigo": first_present(df, ["ramo"], "M"),
+            "canal": first_present(df, ["descripcion_ramo"], "N"),
+            "negocio_codigo": first_present(df, ["unidad_de_negocio"], "AI"),
+            "negocio": first_present(df, ["descripcion_8"], "AJ"),
+            "hl": parse_argentine_number(col_by_position(df, "AO")),
+        }
+    )
+
+    normalized["ruta"] = (
+        normalized["ruta_codigo"].fillna("").astype(str).str.strip()
+        + " - "
+        + normalized["ruta"].fillna("").astype(str).str.strip()
+    ).str.strip(" -")
+    normalized["vendedor"] = normalized["vendedor"].fillna("Sin vendedor").astype(str).str.strip()
+    normalized["supervisor"] = normalized["vendedor"]
+    normalized["promotor"] = normalized["vendedor"]
+    normalized["calibre"] = normalized["calibre"].fillna("Sin calibre").astype(str).str.strip()
+    normalized["division"] = normalized["division"].fillna("Sin division").astype(str).str.strip()
+    normalized["canal"] = normalized["canal"].fillna("Sin canal").astype(str).str.strip()
+    normalized["negocio"] = normalized["negocio"].fillna("Sin negocio").astype(str).str.strip()
+    normalized["mesa"] = mesa_from_promoter(normalized["promotor"])
+    normalized["unidad_negocio"] = np.select(
+        [
+            normalized["negocio"].str.contains("UNG", case=False, na=False),
+            normalized["negocio"].str.contains("CZA|CERVEZ", case=False, na=False),
+        ],
+        ["UNG", "CZA"],
+        default=normalized["negocio"].fillna("Otro").astype(str).str.strip(),
+    )
+
+    normalized = normalized.dropna(subset=["fecha"])
+    normalized["hl"] = normalized["hl"].fillna(0.0)
+    normalized["dia_semana"] = normalized["fecha"].dt.day_name(locale=None)
+    normalized["es_habil"] = normalized["fecha"].dt.weekday <= 5
+    normalized = normalized[normalized["es_habil"]].copy()
+    normalized["mes"] = normalized["fecha"].dt.to_period("M").astype(str)
+    normalized["dia_habil_mes"] = (
+        normalized[["fecha"]]
+        .drop_duplicates()
+        .sort_values("fecha")
+        .assign(dia_habil_mes=lambda x: x.groupby(x["fecha"].dt.to_period("M")).cumcount() + 1)
+        .set_index("fecha")["dia_habil_mes"]
+        .reindex(normalized["fecha"])
+        .to_numpy()
+    )
+    return normalized
+
+
+def filter_options(df: pd.DataFrame, column: str, label: str) -> list[str]:
+    if column not in df.columns:
+        return []
+    values = sorted(df[column].dropna().astype(str).unique().tolist())
+    selected = st.sidebar.multiselect(label, values, default=[])
+    return selected
+
+
+def ensure_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
+    defaults = {
+        "division": "Sin division",
+        "division_informe": "Sin division",
+        "unidad_negocio": "Sin negocio",
+        "calibre": "Sin calibre",
+        "mesa": "Sin mesa",
+        "canal": "Sin canal",
+        "supervisor": "Sin supervisor",
+        "promotor": "Sin promotor",
+    }
+    result = df.copy()
+    for column, default in defaults.items():
+        if column not in result.columns:
+            result[column] = default
+        else:
+            result[column] = result[column].fillna(default).astype(str).str.strip()
+    return result
+
+
+def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Timestamp, dict[str, list[str]]]:
+    df = ensure_analysis_columns(df)
+    min_date = df["fecha"].min().date()
+    max_data_date = df["fecha"].max()
+    max_date = max_data_date.date()
+    max_analysis_date = next_selling_day(max_data_date).date()
+
+    selected_date = st.sidebar.date_input(
+        "Fecha de analisis",
+        value=max_analysis_date,
+        min_value=min_date,
+        max_value=max_analysis_date,
+    )
+    date_range = st.sidebar.date_input(
+        "Rango historico",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+    )
+
+    filtered = df.copy()
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start, end = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
+        filtered = filtered[(filtered["fecha"] >= start) & (filtered["fecha"] <= end)]
+
+    dimension_filters: dict[str, list[str]] = {}
+    for column, label in [
+        ("division", "Division"),
+        ("supervisor", "Supervisor"),
+        ("promotor", "Promotor"),
+        ("ruta", "Ruta"),
+        ("mesa", "Mesa"),
+        ("canal", "Canal"),
+        ("unidad_negocio", "Negocio"),
+        ("calibre", "Calibre"),
+    ]:
+        selected = filter_options(filtered, column, label)
+        dimension_filters[column] = selected
+        if selected:
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
+
+    return filtered, pd.Timestamp(selected_date), dimension_filters
+
+
+def apply_dimension_filters(df: pd.DataFrame, dimension_filters: dict[str, list[str]]) -> pd.DataFrame:
+    filtered = df.copy()
+    for column, selected in dimension_filters.items():
+        if selected and column in filtered.columns:
+            filtered = filtered[filtered[column].astype(str).isin(selected)]
+    return filtered
+
+
+def combine_current_with_history(current_df: pd.DataFrame, annual_df: pd.DataFrame | None) -> pd.DataFrame:
+    if annual_df is None or annual_df.empty:
+        return current_df.copy()
+    if current_df.empty:
+        return annual_df.copy()
+    current_start = current_df["fecha"].min()
+    history = annual_df[annual_df["fecha"] < current_start].copy()
+    return pd.concat([history, current_df.copy()], ignore_index=True)
+
+
+def window_stats(daily: pd.DataFrame, selected_date: pd.Timestamp) -> dict[int, dict[str, float]]:
+    history = daily[daily["fecha"] <= selected_date].sort_values("fecha")
+    result: dict[int, dict[str, float]] = {}
+    for window in WINDOWS:
+        values = history.tail(window)["hl"]
+        result[window] = {
+            "promedio": values.mean(),
+            "mediana": values.median(),
+            "min": values.min(),
+            "max": values.max(),
+            "p25": values.quantile(0.25),
+            "p75": values.quantile(0.75),
+        }
+    return result
+
+
+def average_last_business_days(daily: pd.DataFrame, selected_date: pd.Timestamp, days: int) -> float:
+    history = daily[daily["fecha"] <= selected_date].sort_values("fecha")
+    if history.empty:
+        return np.nan
+    return float(history.tail(days)["hl"].mean())
+
+
+def exact_previous_month_value(
+    daily: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    months_back: int,
+) -> tuple[pd.Timestamp, float]:
+    target_date = selected_date - pd.DateOffset(months=months_back)
+    value = daily.loc[daily["fecha"] == target_date.normalize(), "hl"]
+    if value.empty:
+        return target_date.normalize(), np.nan
+    return target_date.normalize(), float(value.iloc[0])
+
+
+def exact_previous_year_value(
+    daily_aa: pd.DataFrame,
+    selected_date: pd.Timestamp,
+) -> tuple[pd.Timestamp, float]:
+    target_date = selected_date - pd.DateOffset(years=1)
+    value = daily_aa.loc[daily_aa["fecha"] == target_date.normalize(), "hl"]
+    if value.empty:
+        return target_date.normalize(), np.nan
+    return target_date.normalize(), float(value.iloc[0])
+
+
+def argentina_holidays_for_years(years: list[int]) -> set[pd.Timestamp]:
+    if holidays is None:
+        return set()
+    holiday_dates = holidays.country_holidays("AR", years=years)
+    return {pd.Timestamp(day).normalize() for day in holiday_dates.keys()}
+
+
+def selling_day_weight(date_value: pd.Timestamp, holiday_dates: set[pd.Timestamp]) -> float:
+    date_value = pd.Timestamp(date_value).normalize()
+    if date_value in holiday_dates or date_value.weekday() == 6:
+        return 0.0
+    if date_value.weekday() == 5:
+        return 0.5
+    return 1.0
+
+
+def weighted_selling_days(start: pd.Timestamp, end: pd.Timestamp) -> float:
+    if pd.isna(start) or pd.isna(end) or end < start:
+        return 0.0
+    dates = pd.date_range(start.normalize(), end.normalize(), freq="D")
+    holiday_dates = argentina_holidays_for_years(sorted(set(dates.year.tolist())))
+    return float(sum(selling_day_weight(date, holiday_dates) for date in dates))
+
+
+def next_selling_day(date_value: pd.Timestamp) -> pd.Timestamp:
+    candidate = pd.Timestamp(date_value).normalize() + pd.Timedelta(days=1)
+    while True:
+        holiday_dates = argentina_holidays_for_years([candidate.year])
+        if selling_day_weight(candidate, holiday_dates) > 0:
+            return candidate
+        candidate += pd.Timedelta(days=1)
+
+
+def projected_month_trend(accumulated_value: float, selected_date: pd.Timestamp) -> float:
+    month_start = selected_date.replace(day=1)
+    month_end = selected_date + pd.offsets.MonthEnd(0)
+    elapsed_weight = weighted_selling_days(month_start, selected_date)
+    month_weight = weighted_selling_days(month_start, month_end)
+    if elapsed_weight <= 0:
+        return np.nan
+    return float(accumulated_value / elapsed_weight * month_weight)
+
+
+def accumulated_vs_previous_year(
+    current_daily: pd.DataFrame,
+    annual_daily: pd.DataFrame,
+    selected_date: pd.Timestamp,
+) -> dict[str, float | pd.Timestamp]:
+    current_start = selected_date.replace(day=1)
+    previous_start = current_start - pd.DateOffset(years=1)
+    previous_end = selected_date - pd.DateOffset(years=1)
+
+    current_value = current_daily.loc[
+        (current_daily["fecha"] >= current_start) & (current_daily["fecha"] <= selected_date),
+        "hl",
+    ].sum()
+    previous_value = annual_daily.loc[
+        (annual_daily["fecha"] >= previous_start) & (annual_daily["fecha"] <= previous_end),
+        "hl",
+    ].sum()
+    projected_value = projected_month_trend(float(current_value), selected_date)
+    trend = (projected_value / previous_value * 100) if previous_value else np.nan
+    return {
+        "current_start": current_start,
+        "previous_start": previous_start,
+        "previous_end": previous_end,
+        "current_value": float(current_value),
+        "previous_value": float(previous_value) if previous_value else np.nan,
+        "projected_value": projected_value,
+        "trend": trend,
+    }
+
+
+def previous_month_same_business_day(daily: pd.DataFrame, selected_date: pd.Timestamp) -> float:
+    return previous_same_business_day_by_months(daily, selected_date, 1)
+
+
+def previous_same_business_day_by_months(
+    daily: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    months_back: int,
+) -> float:
+    calendar = daily[["fecha"]].drop_duplicates().sort_values("fecha").copy()
+    if calendar.empty:
+        return np.nan
+    calendar["mes_period"] = calendar["fecha"].dt.to_period("M")
+    calendar["dia_habil_mes"] = calendar.groupby("mes_period").cumcount() + 1
+
+    current = calendar[calendar["fecha"] == selected_date]
+    if current.empty:
+        return np.nan
+
+    previous_month = selected_date.to_period("M") - months_back
+    business_index = int(current["dia_habil_mes"].iloc[0])
+    match = calendar[
+        (calendar["mes_period"] == previous_month)
+        & (calendar["dia_habil_mes"] == business_index)
+    ]
+    if match.empty:
+        return np.nan
+    previous_date = match["fecha"].iloc[0]
+    value = daily.loc[daily["fecha"] == previous_date, "hl"]
+    return float(value.iloc[0]) if not value.empty else np.nan
+
+
+def format_hl(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def format_pct(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:+.1f}%".replace(".", ",")
+
+
+def metric_card(title: str, value: str, sub: str, accent: str = "blue") -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card accent-{accent}">
+            <div class="metric-title">{title}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def business_card(title: str, value: float, total: float, class_name: str) -> None:
+    share = (value / total * 100) if total else np.nan
+    st.markdown(
+        f"""
+        <div class="business-card {class_name}">
+            <div class="business-title">{title}</div>
+            <div class="business-value">{format_hl(value)}</div>
+            <div class="business-sub">{format_pct(share).replace("+", "")} del HL del dia seleccionado</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def chart_layout(fig):
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font=dict(family="Arial", color="#0f172a", size=13),
+        title=dict(font=dict(color="#0f172a", size=18)),
+        margin=dict(l=20, r=20, t=45, b=20),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(color="#0f172a"),
+        ),
+    )
+    fig.update_xaxes(
+        showgrid=False,
+        color="#0f172a",
+        title_font=dict(color="#0f172a"),
+        tickfont=dict(color="#0f172a"),
+    )
+    fig.update_yaxes(
+        gridcolor="rgba(16,24,40,.16)",
+        color="#0f172a",
+        title_font=dict(color="#0f172a"),
+        tickfont=dict(color="#0f172a"),
+    )
+    fig.update_coloraxes(colorbar=dict(tickfont=dict(color="#0f172a"), title_font=dict(color="#0f172a")))
+    return fig
+
+
+def daily_business(df: pd.DataFrame, business: str) -> pd.DataFrame:
+    business_df = df[df["unidad_negocio"] == business]
+    if business_df.empty:
+        return pd.DataFrame({"fecha": pd.to_datetime([]), "hl": pd.Series(dtype="float64")})
+    return business_df.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+
+
+def business_kpi_block(
+    df: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    business: str,
+    accent: str,
+    history_df: pd.DataFrame | None = None,
+) -> None:
+    daily = daily_business(df, business)
+    history_daily = daily_business(history_df if history_df is not None else df, business)
+    current = float(daily.loc[daily["fecha"] == selected_date, "hl"].sum()) if not daily.empty else 0.0
+    stats = window_stats(history_daily, selected_date)[28] if not history_daily.empty else {
+        "promedio": np.nan,
+        "mediana": np.nan,
+        "p25": np.nan,
+        "p75": np.nan,
+    }
+    gap = current - stats["mediana"] if not pd.isna(stats["mediana"]) else np.nan
+    planning_midpoint = (
+        (stats["p25"] + stats["p75"]) / 2
+        if not pd.isna(stats["p25"]) and not pd.isna(stats["p75"])
+        else np.nan
+    )
+
+    st.markdown(f"#### {business}")
+    cols = st.columns(6)
+    cards = [
+        ("HL dia actual", format_hl(current), selected_date.strftime("%d/%m/%Y"), accent),
+        ("Promedio 28", format_hl(stats["promedio"]), "Dias habiles", "green"),
+        ("Mediana 28", format_hl(stats["mediana"]), f"Gap {format_hl(gap)} HL", "violet"),
+        ("Min planificable", format_hl(stats["p25"]), "Percentil 25", "orange"),
+        ("Prom planificable", format_hl(planning_midpoint), "Entre min y max", "blue"),
+        ("Max planificable", format_hl(stats["p75"]), "Percentil 75", "red"),
+    ]
+    for col, (title, value, sub, card_accent) in zip(cols, cards):
+        with col:
+            metric_card(title, value, sub, card_accent)
+
+    compare_cols = st.columns(3)
+    compare_cards = [
+        (
+            f"Vendido {months_back * 30} dias",
+            format_hl(value),
+            target_date.strftime("%d/%m/%Y"),
+            card_accent,
+        )
+        for months_back, card_accent in zip(EXACT_MONTH_LOOKBACKS, (accent, "orange", "violet"))
+        for target_date, value in [exact_previous_month_value(history_daily, selected_date, months_back)]
+    ]
+    for col, (title, value, sub, card_accent) in zip(compare_cols, compare_cards):
+        with col:
+            metric_card(title, value, sub, card_accent)
+
+
+def planning_table(df: pd.DataFrame, selected_date: pd.Timestamp) -> pd.DataFrame:
+    rows = []
+    for group_name, group in df.groupby("calibre", dropna=False):
+        daily = group.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+        stats = window_stats(daily, selected_date)[28]
+        rows.append(
+            {
+                "Calibre": group_name,
+                "Minimo planificable": stats["p25"],
+                "Mediana": stats["mediana"],
+                "Promedio": stats["promedio"],
+                "Maximo planificable": stats["p75"],
+                "Min historico": stats["min"],
+                "Max historico": stats["max"],
+            }
+        )
+    table = pd.DataFrame(rows).sort_values("Promedio", ascending=False)
+    return table
+
+
+def promoter_planning_table(df: pd.DataFrame, selected_date: pd.Timestamp) -> pd.DataFrame:
+    rows = []
+    for promoter, group in df.groupby("promotor", dropna=False):
+        daily = group.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+        stats = window_stats(daily, selected_date)[28]
+        current = float(daily.loc[daily["fecha"] == selected_date, "hl"].sum())
+        planning_midpoint = (
+            (stats["p25"] + stats["p75"]) / 2
+            if not pd.isna(stats["p25"]) and not pd.isna(stats["p75"])
+            else np.nan
+        )
+        exact_values = {
+            f"Vendido {months_back * 30} dias": exact_previous_month_value(
+                daily,
+                selected_date,
+                months_back,
+            )[1]
+            for months_back in EXACT_MONTH_LOOKBACKS
+        }
+        rows.append(
+            {
+                "Promotor": promoter,
+                "HL dia actual": current,
+                "Promedio 28": stats["promedio"],
+                "Mediana 28": stats["mediana"],
+                "Min planificable": stats["p25"],
+                "Prom planificable": planning_midpoint,
+                "Max planificable": stats["p75"],
+                **exact_values,
+            }
+        )
+    table = pd.DataFrame(rows)
+    if table.empty:
+        return table
+    return table.sort_values("Promedio 28", ascending=False)
+
+
+def year_comparison_curve(
+    current_daily: pd.DataFrame,
+    annual_daily: pd.DataFrame,
+    selected_date: pd.Timestamp,
+) -> pd.DataFrame:
+    current_start = selected_date.replace(day=1)
+    previous_start = current_start - pd.DateOffset(years=1)
+    previous_end = selected_date - pd.DateOffset(years=1)
+
+    current = current_daily[
+        (current_daily["fecha"] >= current_start) & (current_daily["fecha"] <= selected_date)
+    ].copy()
+    current["serie"] = "Venta diaria actual"
+    current["fecha_comparativa"] = current["fecha"]
+
+    previous = annual_daily[
+        (annual_daily["fecha"] >= previous_start) & (annual_daily["fecha"] <= previous_end)
+    ].copy()
+    previous["serie"] = "Venta diaria AA"
+    previous["fecha_comparativa"] = previous["fecha"] + pd.DateOffset(years=1)
+
+    return pd.concat([current, previous], ignore_index=True)
+
+
+def aa_daily_report(current_df: pd.DataFrame, annual_df: pd.DataFrame) -> pd.DataFrame:
+    dims = ["fecha", "division", "unidad_negocio", "calibre", "mesa", "canal", "supervisor", "promotor"]
+    current = current_df.groupby(dims, as_index=False)["hl"].sum().rename(columns={"hl": "HL actual"})
+    annual = annual_df.copy()
+    annual["fecha"] = annual["fecha"] + pd.DateOffset(years=1)
+    annual = annual.groupby(dims, as_index=False)["hl"].sum().rename(columns={"hl": "AA"})
+    report = current.merge(annual, on=dims, how="left")
+    report["Tendencia vs AA"] = np.where(
+        report["AA"].fillna(0) != 0,
+        (report["HL actual"] - report["AA"]) / report["AA"] * 100,
+        np.nan,
+    )
+    return report.sort_values(["fecha", "HL actual"], ascending=[False, False])
+
+
+def executive_summary_table(
+    current_df: pd.DataFrame,
+    annual_df: pd.DataFrame | None,
+    selected_date: pd.Timestamp,
+    group_col: str,
+    first_col: str,
+    total_label: str | None = None,
+    objectives_df: pd.DataFrame | None = None,
+    objective_section: str = "",
+) -> pd.DataFrame:
+    current_start = selected_date.replace(day=1)
+    previous_start = current_start - pd.DateOffset(years=1)
+    previous_end = selected_date - pd.DateOffset(years=1)
+    previous_month_end = previous_start + pd.offsets.MonthEnd(0)
+
+    def aggregate(source: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, value_name: str) -> pd.DataFrame:
+        if source is None or source.empty or group_col not in source.columns:
+            return pd.DataFrame(columns=[group_col, value_name])
+        scoped = source[(source["fecha"] >= start) & (source["fecha"] <= end)]
+        return scoped.groupby(group_col, as_index=False)["hl"].sum().rename(columns={"hl": value_name})
+
+    accum_actual = aggregate(current_df, current_start, selected_date, "ACUM. ACTUAL")
+    accum_ant = aggregate(current_df, current_start, selected_date - pd.Timedelta(days=1), "ACUM ANT.")
+    today = aggregate(current_df, selected_date, selected_date, "HOY")
+    aa = aggregate(annual_df, previous_start, previous_month_end, "AA")
+
+    key_frames = [frame[[group_col]] for frame in (accum_actual, accum_ant, today, aa) if not frame.empty]
+    if group_col == "canal":
+        key_frames.append(pd.DataFrame({group_col: CANAL_ORDER}))
+    if group_col == "division_informe":
+        key_frames.append(pd.DataFrame({group_col: DIVISION_REPORT_ORDER}))
+    keys = (
+        pd.concat(key_frames, ignore_index=True).drop_duplicates()
+        if key_frames
+        else pd.DataFrame(columns=[group_col])
+    )
+    table = keys
+    for frame in (accum_ant, accum_actual, today, aa):
+        table = table.merge(frame, on=group_col, how="left")
+    for column in ["ACUM ANT.", "ACUM. ACTUAL", "HOY", "AA"]:
+        table[column] = table[column].fillna(0.0)
+    table["TENDENCIA"] = table["ACUM. ACTUAL"].apply(lambda value: projected_month_trend(float(value), selected_date))
+    table["TENDENCIA VS AA"] = np.nan
+    valid_aa = table["AA"].fillna(0) != 0
+    if valid_aa.any():
+        table.loc[valid_aa, "TENDENCIA VS AA"] = (
+            table.loc[valid_aa, "TENDENCIA"] / table.loc[valid_aa, "AA"] * 100
+        )
+    table = table.rename(columns={group_col: first_col})
+
+    if objectives_df is not None and not objectives_df.empty:
+        objective_lookup = objectives_df.copy()
+        section_key = objective_section.strip().upper()
+        if section_key:
+            section_objectives = objective_lookup[objective_lookup["seccion"].isin(["", section_key])]
+        else:
+            section_objectives = objective_lookup
+        section_objectives = section_objectives.drop_duplicates("item", keep="last")
+        objective_map = section_objectives.set_index("item")["OBJ VTAS"]
+        table["OBJ VTAS"] = table[first_col].astype(str).str.strip().str.upper().map(objective_map)
+    else:
+        table["OBJ VTAS"] = np.nan
+
+    table["OBJ VS VENTAS"] = np.nan
+    valid_objective = table["OBJ VTAS"].fillna(0) != 0
+    if valid_objective.any():
+        table.loc[valid_objective, "OBJ VS VENTAS"] = (
+            table.loc[valid_objective, "ACUM. ACTUAL"] / table.loc[valid_objective, "OBJ VTAS"] * 100
+        )
+    table["TEND VS VENTAS"] = np.nan
+    if valid_objective.any():
+        table.loc[valid_objective, "TEND VS VENTAS"] = (
+            table.loc[valid_objective, "TENDENCIA"] / table.loc[valid_objective, "OBJ VTAS"] * 100
+        )
+
+    ordered_cols = [
+        first_col,
+        "ACUM ANT.",
+        "ACUM. ACTUAL",
+        "HOY",
+        "TENDENCIA",
+        "AA",
+        "TENDENCIA VS AA",
+        "OBJ VTAS",
+        "OBJ VS VENTAS",
+        "TEND VS VENTAS",
+    ]
+    table = table[ordered_cols].sort_values("ACUM. ACTUAL", ascending=False)
+    if group_col == "canal":
+        order_map = {name: index for index, name in enumerate(CANAL_ORDER)}
+        table["_orden"] = table[first_col].map(order_map).fillna(len(CANAL_ORDER))
+        table = table.sort_values(["_orden", "ACUM. ACTUAL"], ascending=[True, False]).drop(columns=["_orden"])
+    if group_col == "division_informe":
+        table = table[table[first_col].astype(str).isin(DIVISION_REPORT_ORDER)].copy()
+        order_map = {name: index for index, name in enumerate(DIVISION_REPORT_ORDER)}
+        table["_orden"] = table[first_col].map(order_map).fillna(len(DIVISION_REPORT_ORDER))
+        table = table.sort_values(["_orden", "ACUM. ACTUAL"], ascending=[True, False]).drop(columns=["_orden"])
+        for label, business in (("TOTAL CVZA", "CZA"), ("TOTAL UNG", "UNG")):
+            current_business = current_df[current_df["unidad_negocio"] == business] if "unidad_negocio" in current_df.columns else current_df.iloc[0:0]
+            annual_business = (
+                annual_df[annual_df["unidad_negocio"] == business]
+                if annual_df is not None and "unidad_negocio" in annual_df.columns
+                else None
+            )
+            total_table = executive_summary_table(
+                current_business,
+                annual_business,
+                selected_date,
+                "unidad_negocio",
+                first_col,
+                objectives_df=objectives_df,
+                objective_section=objective_section,
+            )
+            if not total_table.empty:
+                total_row = total_table.iloc[0].copy()
+                total_row[first_col] = label
+                if label in table[first_col].values:
+                    for column in table.columns:
+                        table.loc[table[first_col] == label, column] = total_row.get(column, np.nan)
+
+    if total_label:
+        if group_col == "division_informe":
+            report_current_df = (
+                current_df[current_df["unidad_negocio"].isin(REPORT_TOTAL_UNITS)]
+                if "unidad_negocio" in current_df.columns
+                else current_df
+            )
+            report_annual_df = (
+                annual_df[annual_df["unidad_negocio"].isin(REPORT_TOTAL_UNITS)]
+                if annual_df is not None and not annual_df.empty and "unidad_negocio" in annual_df.columns
+                else annual_df
+            )
+            total_accum_actual = report_current_df.loc[
+                (report_current_df["fecha"] >= current_start) & (report_current_df["fecha"] <= selected_date), "hl"
+            ].sum()
+            total_accum_ant = report_current_df.loc[
+                (report_current_df["fecha"] >= current_start) & (report_current_df["fecha"] <= selected_date - pd.Timedelta(days=1)), "hl"
+            ].sum()
+            total_today = report_current_df.loc[report_current_df["fecha"] == selected_date, "hl"].sum()
+            total_aa = (
+                report_annual_df.loc[(report_annual_df["fecha"] >= previous_start) & (report_annual_df["fecha"] <= previous_month_end), "hl"].sum()
+                if report_annual_df is not None and not report_annual_df.empty
+                else 0.0
+            )
+            total_obj = table.loc[table[first_col].isin(["TOTAL CVZA", "TOTAL UNG", "AGUAS ECO", "VINO", "ADYACENCIAS"]), "OBJ VTAS"].sum(min_count=1)
+            total = {
+                first_col: total_label,
+                "ACUM ANT.": total_accum_ant,
+                "ACUM. ACTUAL": total_accum_actual,
+                "HOY": total_today,
+                "TENDENCIA": projected_month_trend(float(total_accum_actual), selected_date),
+                "AA": total_aa,
+                "OBJ VTAS": total_obj,
+            }
+        else:
+            total = {
+                first_col: total_label,
+                "ACUM ANT.": table["ACUM ANT."].sum(),
+                "ACUM. ACTUAL": table["ACUM. ACTUAL"].sum(),
+                "HOY": table["HOY"].sum(),
+                "TENDENCIA": table["TENDENCIA"].sum(),
+                "AA": table["AA"].sum(),
+                "OBJ VTAS": table["OBJ VTAS"].sum(min_count=1),
+            }
+        total["TENDENCIA VS AA"] = total["TENDENCIA"] / total["AA"] * 100 if total["AA"] else np.nan
+        total["OBJ VS VENTAS"] = (
+            total["ACUM. ACTUAL"] / total["OBJ VTAS"] * 100
+            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            else np.nan
+        )
+        total["TEND VS VENTAS"] = (
+            total["TENDENCIA"] / total["OBJ VTAS"] * 100
+            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            else np.nan
+        )
+        table = pd.concat([pd.DataFrame([total]), table], ignore_index=True)
+    return table
+
+
+def format_exec_number(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    if abs(float(value)) >= 100:
+        text = f"{value:,.0f}"
+    else:
+        text = f"{value:,.1f}"
+    return text.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def render_exec_table(title: str, table: pd.DataFrame, first_col: str) -> None:
+    rows = []
+    for idx, row in table.iterrows():
+        row_class = " class=\"total-row\"" if idx == 0 and str(row[first_col]).upper().startswith(("TOTAL", "HL TOTAL")) else ""
+        cells = [f"<td>{row[first_col]}</td>"]
+        for column in table.columns:
+            if column == first_col:
+                continue
+            if column in {"TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"}:
+                cells.append(f"<td>{format_pct(row[column]).replace('+', '')}</td>")
+            else:
+                cells.append(f"<td>{format_exec_number(row[column])}</td>")
+        rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
+    header = "".join(f"<th>{column}</th>" for column in table.columns)
+    st.markdown(
+        f"""
+        <div class="exec-wrap">
+            <div class="exec-title">{title}</div>
+            <table class="exec-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def default_objectives() -> pd.DataFrame:
+    return pd.DataFrame(DEFAULT_OBJECTIVES_ROWS)
+
+
+def make_pdf_cell(value, is_percent: bool = False) -> str:
+    if is_percent:
+        return format_pct(value).replace("+", "")
+    return format_exec_number(value)
+
+
+def table_for_pdf(table: pd.DataFrame, first_col: str) -> list[list[str]]:
+    output = [list(table.columns)]
+    percent_cols = {"TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"}
+    for _, row in table.iterrows():
+        output_row = [str(row[first_col])]
+        for column in table.columns:
+            if column == first_col:
+                continue
+            output_row.append(make_pdf_cell(row[column], column in percent_cols))
+        output.append(output_row)
+    return output
+
+
+def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date: pd.Timestamp) -> bytes:
+    buffer = io.BytesIO()
+    page_width, _ = landscape(A4)
+    margin = 18
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=margin,
+        leftMargin=margin,
+        topMargin=18,
+        bottomMargin=18,
+        title="Informe venta del dia",
+    )
+    usable_width = page_width - 2 * margin
+    header_color = colors.HexColor("#28549A")
+    first_col_color = colors.HexColor("#2F5EA8")
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=18,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=8,
+    )
+    section_style = ParagraphStyle(
+        "SectionTitle",
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=12,
+        textColor=colors.HexColor("#111827"),
+        spaceBefore=6,
+        spaceAfter=4,
+    )
+    elements = [Paragraph(f"Informe venta del dia - {selected_date.strftime('%d/%m/%Y')}", title_style)]
+
+    compact_cols = {"ACUM ANT.", "ACUM. ACTUAL", "HOY", "TENDENCIA", "AA", "TENDENCIA VS AA"}
+    full_cols = [
+        None,
+        "ACUM ANT.",
+        "ACUM. ACTUAL",
+        "HOY",
+        "TENDENCIA",
+        "AA",
+        "TENDENCIA VS AA",
+        "OBJ VTAS",
+        "OBJ VS VENTAS",
+        "TEND VS VENTAS",
+    ]
+
+    for index, (title, table, first_col) in enumerate(tables):
+        if table.empty:
+            continue
+        if index in {2, 3, 5, 6}:
+            table_to_print = table[[first_col] + [col for col in table.columns if col in compact_cols]].copy()
+        else:
+            table_to_print = table.copy()
+        elements.append(Paragraph(title.upper(), section_style))
+        pdf_table = table_for_pdf(table_to_print, first_col)
+        col_count = len(pdf_table[0])
+        first_width = min(128, usable_width * 0.26)
+        rest_width = (usable_width - first_width) / max(col_count - 1, 1)
+        report_table = Table(pdf_table, colWidths=[first_width] + [rest_width] * (col_count - 1), repeatRows=1)
+        style = TableStyle(
+            [
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 6.8),
+                ("FONTSIZE", (0, 1), (-1, -1), 6.6),
+                ("BACKGROUND", (0, 0), (-1, 0), header_color),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("BACKGROUND", (0, 1), (0, -1), first_col_color),
+                ("TEXTCOLOR", (0, 1), (0, -1), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.black),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+        report_table.setStyle(style)
+        elements.append(report_table)
+        elements.append(Spacer(1, 8))
+        if index in {3}:
+            elements.append(PageBreak())
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def main() -> None:
+    page_setup()
+    st.markdown(
+        """
+        <div class="hero">
+            <h1>Venta diaria HL</h1>
+            <p>Analisis comercial con ventanas habiles, planificacion por percentiles y comparacion mensual.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.title("Datos y filtros")
+    st.sidebar.caption(f"Carpeta automatica: {DEFAULT_DATA_DIR}")
+    if st.sidebar.button("Actualizar datos", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+
+    uploaded = st.sidebar.file_uploader("Carga manual si falla la carpeta", type=["txt", "csv"])
+
+    try:
+        if uploaded is not None:
+            df, info = load_source_from_upload(uploaded.name, uploaded.getvalue())
+        else:
+            latest = latest_daily_file_in_folder(DEFAULT_DATA_DIR)
+            if latest is None:
+                st.warning("No encontre archivos TXT/CSV en la carpeta automatica. Use la carga manual.")
+                st.stop()
+            df, info = load_source_from_path(str(latest), latest.stat().st_mtime_ns)
+    except Exception as exc:
+        st.error(f"No pude leer el archivo: {exc}")
+        st.stop()
+
+    if df.empty:
+        st.warning("El archivo no contiene filas validas luego de normalizar y excluir domingos.")
+        st.stop()
+
+    customer_channels: pd.DataFrame | None = None
+    customer_info: SourceInfo | None = None
+    customer_file = latest_customer_file_in_folder(DEFAULT_DATA_DIR)
+    if customer_file is not None:
+        try:
+            customer_channels, customer_info = load_customer_channels(str(customer_file), customer_file.stat().st_mtime_ns)
+            df = apply_customer_channels(df, customer_channels)
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer la planilla de clientes para canal: {exc}")
+    else:
+        st.sidebar.warning("No se encontro planilla de clientes para clasificar canal.")
+    df = ensure_analysis_columns(df)
+
+    aux_segments: dict[str, pd.DataFrame] | None = None
+    aux_info: SourceInfo | None = None
+    aux_file = latest_auxiliary_file_in_folder(DEFAULT_DATA_DIR)
+    if aux_file is not None:
+        try:
+            aux_segments, aux_info = load_auxiliary_segments(str(aux_file), aux_file.stat().st_mtime_ns)
+            df = apply_auxiliary_segments(df, aux_segments)
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer auxiliares para segmentos: {exc}")
+    else:
+        df = apply_auxiliary_segments(df, None)
+        st.sidebar.warning("No se encontro archivo auxiliares para segmentos.")
+    df = ensure_analysis_columns(df)
+
+    objectives_df = default_objectives()
+    objectives_info: SourceInfo | None = None
+    objectives_file = latest_objectives_file_in_folder(DEFAULT_DATA_DIR)
+    if objectives_file is not None:
+        try:
+            objectives_df, objectives_info = load_objectives(str(objectives_file), objectives_file.stat().st_mtime_ns)
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer objetivos; uso objetivos de mayo de respaldo: {exc}")
+
+    annual_df: pd.DataFrame | None = None
+    annual_info: SourceInfo | None = None
+    annual_warning = "No se encontro archivo de venta anual para comparacion AA"
+    if uploaded is None:
+        annual_file = latest_annual_file_in_folder(DEFAULT_DATA_DIR)
+        if annual_file is not None:
+            try:
+                annual_df, annual_info = load_annual_source_from_path(str(annual_file), annual_file.stat().st_mtime_ns)
+                annual_df = apply_customer_channels(annual_df, customer_channels)
+                annual_df = apply_auxiliary_segments(annual_df, aux_segments)
+                annual_df = ensure_analysis_columns(annual_df)
+            except Exception as exc:
+                st.sidebar.warning(f"{annual_warning}: {exc}")
+    else:
+        st.sidebar.info("La comparacion AA automatica se omite cuando se usa carga manual.")
+
+    st.sidebar.success(f"Fuente: {info.label}")
+    if info.modified:
+        st.sidebar.caption(f"Modificado: {info.modified}")
+    if info.path:
+        st.sidebar.caption(info.path)
+    if customer_info is not None:
+        st.sidebar.success(f"Clientes: {customer_info.label}")
+        if customer_info.modified:
+            st.sidebar.caption(f"Modificado clientes: {customer_info.modified}")
+    if objectives_info is not None:
+        st.sidebar.success(f"Objetivos: {objectives_info.label}")
+    else:
+        st.sidebar.info("Objetivos: respaldo mayo cargado hasta que agregues objetivos.xlsx")
+    if aux_info is not None:
+        st.sidebar.success(f"Auxiliares: {aux_info.label}")
+    if annual_info is not None:
+        st.sidebar.success(f"AA: {annual_info.label}")
+        if annual_info.modified:
+            st.sidebar.caption(f"Modificado AA: {annual_info.modified}")
+    else:
+        st.sidebar.warning(annual_warning)
+
+    filtered, selected_date, dimension_filters = apply_filters(df)
+    annual_filtered = apply_dimension_filters(ensure_analysis_columns(annual_df), dimension_filters) if annual_df is not None else None
+    if filtered.empty:
+        st.warning("No hay datos para los filtros seleccionados.")
+        st.stop()
+
+    historical_filtered = combine_current_with_history(filtered, annual_filtered)
+    daily = filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+    historical_daily = historical_filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+    annual_daily = (
+        annual_filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+        if annual_filtered is not None and not annual_filtered.empty
+        else pd.DataFrame({"fecha": pd.to_datetime([]), "hl": pd.Series(dtype="float64")})
+    )
+    current_value = float(daily.loc[daily["fecha"] == selected_date, "hl"].sum())
+    stats = window_stats(historical_daily, selected_date)
+    baseline = stats[28]
+    previous_same = previous_month_same_business_day(historical_daily, selected_date)
+    variation = ((current_value - previous_same) / previous_same * 100) if previous_same else np.nan
+    gap_median = current_value - baseline["mediana"]
+    current_by_business = (
+        filtered.loc[filtered["fecha"] == selected_date]
+        .groupby("unidad_negocio", as_index=True)["hl"]
+        .sum()
+    )
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1:
+        metric_card("HL dia actual", format_hl(current_value), selected_date.strftime("%d/%m/%Y"), "blue")
+    with k2:
+        metric_card("Mediana 28 habiles", format_hl(baseline["mediana"]), f"Gap {format_hl(gap_median)} HL", "violet")
+    with k3:
+        metric_card("Promedio 28 habiles", format_hl(baseline["promedio"]), "Base historica filtrada", "green")
+    with k4:
+        metric_card("Min planificable", format_hl(baseline["p25"]), "Percentil 25", "orange")
+    with k5:
+        metric_card("Max planificable", format_hl(baseline["p75"]), f"Var mes ant. {format_pct(variation)}", "red")
+
+    if annual_info is not None and not annual_daily.empty:
+        aa_date, aa_value = exact_previous_year_value(annual_daily, selected_date)
+        aa_accum = accumulated_vs_previous_year(daily, annual_daily, selected_date)
+        st.subheader("Comparacion AA")
+        aa1, aa2, aa3, aa4 = st.columns(4)
+        with aa1:
+            metric_card("AA dia exacto", format_hl(aa_value), aa_date.strftime("%d/%m/%Y"), "violet")
+        with aa2:
+            metric_card("Acumulado actual", format_hl(aa_accum["current_value"]), "Periodo seleccionado", "blue")
+        with aa3:
+            metric_card("Acumulado AA", format_hl(aa_accum["previous_value"]), "Mismo periodo AA", "orange")
+        with aa4:
+            metric_card("Tendencia vs AA", format_pct(aa_accum["trend"]), f"Proy {format_hl(aa_accum['projected_value'])} HL", "green")
+
+    st.subheader("Venta del mismo dia en meses anteriores")
+    exact_cols = st.columns(3)
+    for col, months_back, accent in zip(exact_cols, EXACT_MONTH_LOOKBACKS, ("blue", "orange", "violet")):
+        target_date, value = exact_previous_month_value(historical_daily, selected_date, months_back)
+        with col:
+            metric_card(
+                f"Vendido {months_back * 30} dias",
+                format_hl(value),
+                target_date.strftime("%d/%m/%Y"),
+                accent,
+            )
+
+    st.subheader("Separado por negocio")
+    b1, b2 = st.columns(2)
+    with b1:
+        business_card("CZA - HL dia actual", float(current_by_business.get("CZA", 0.0)), current_value, "business-cza")
+    with b2:
+        business_card("UNG - HL dia actual", float(current_by_business.get("UNG", 0.0)), current_value, "business-ung")
+
+    st.subheader("KPIs completos por negocio")
+    business_kpi_block(filtered, selected_date, "CZA", "blue", historical_filtered)
+    business_kpi_block(filtered, selected_date, "UNG", "green", historical_filtered)
+
+    st.subheader("Ventanas habiles")
+    cols = st.columns(4)
+    for col, window in zip(cols, WINDOWS):
+        with col:
+            metric_card(
+                f"{window} dias",
+                format_hl(stats[window]["promedio"]),
+                f"Mediana {format_hl(stats[window]['mediana'])}",
+                "blue" if window == 7 else "green" if window == 14 else "orange" if window == 21 else "violet",
+            )
+
+    tab_overview, tab_informe, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
+        ["Evolucion", "Informe", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
+    )
+
+    with tab_overview:
+        line = px.line(
+            daily,
+            x="fecha",
+            y="hl",
+            markers=True,
+            title="HL diarios",
+            color_discrete_sequence=["#1463ff"],
+        )
+        st.plotly_chart(chart_layout(line), width="stretch")
+
+        left, right = st.columns(2)
+        by_calibre = filtered.groupby("calibre", as_index=False)["hl"].sum().sort_values("hl", ascending=False).head(20)
+        by_business = filtered.groupby("unidad_negocio", as_index=False)["hl"].sum().sort_values("hl", ascending=False)
+        with left:
+            fig = px.bar(
+                by_calibre,
+                x="hl",
+                y="calibre",
+                orientation="h",
+                title="HL por calibre",
+                color="hl",
+                color_continuous_scale=["#00a7c8", "#1463ff", "#7a5af8"],
+            )
+            st.plotly_chart(chart_layout(fig), width="stretch")
+        with right:
+            fig = px.bar(
+                by_business,
+                x="unidad_negocio",
+                y="hl",
+                title="HL por negocio CZA/UNG",
+                color="unidad_negocio",
+                color_discrete_sequence=["#1463ff", "#12b76a", "#f79009"],
+            )
+            st.plotly_chart(chart_layout(fig), width="stretch")
+
+    with tab_informe:
+        st.subheader("Informe de venta del dia")
+        if annual_info is None or annual_filtered is None or annual_filtered.empty:
+            st.warning("No se encontro archivo de venta anual para comparacion AA")
+
+        report_source = annual_filtered if annual_filtered is not None and not annual_filtered.empty else None
+        cerveza_df = filtered[filtered["unidad_negocio"] == "CZA"]
+        cerveza_aa = report_source[report_source["unidad_negocio"] == "CZA"] if report_source is not None else None
+        ung_df = filtered[filtered["unidad_negocio"] == "UNG"]
+        ung_aa = report_source[report_source["unidad_negocio"] == "UNG"] if report_source is not None else None
+
+        informe_tables = [
+            (
+                "Division / negocio",
+                executive_summary_table(
+                    filtered,
+                    report_source,
+                    selected_date,
+                    "division_informe",
+                    "DIVISION",
+                    "HL TOTALES",
+                    objectives_df,
+                    "DIVISION",
+                ),
+                "DIVISION",
+            ),
+            (
+                "X mesa - cerveza",
+                executive_summary_table(cerveza_df, cerveza_aa, selected_date, "mesa", "MESA", objectives_df=objectives_df, objective_section="MESA CERVEZA"),
+                "MESA",
+            ),
+            (
+                "X calibre - cerveza",
+                executive_summary_table(cerveza_df, cerveza_aa, selected_date, "calibre", "CALIBRE", objectives_df=objectives_df, objective_section="CALIBRE CERVEZA"),
+                "CALIBRE",
+            ),
+            (
+                "X canal - cerveza",
+                executive_summary_table(cerveza_df, cerveza_aa, selected_date, "canal", "CANAL", objectives_df=objectives_df, objective_section="CANAL CERVEZA"),
+                "CANAL",
+            ),
+            (
+                "X mesa - ung",
+                executive_summary_table(ung_df, ung_aa, selected_date, "mesa", "MESA", objectives_df=objectives_df, objective_section="MESA UNG"),
+                "MESA",
+            ),
+            (
+                "X calibre - ung",
+                executive_summary_table(ung_df, ung_aa, selected_date, "calibre", "CALIBRE", objectives_df=objectives_df, objective_section="CALIBRE UNG"),
+                "CALIBRE",
+            ),
+            (
+                "X canal - ung",
+                executive_summary_table(ung_df, ung_aa, selected_date, "canal", "CANAL", objectives_df=objectives_df, objective_section="CANAL UNG"),
+                "CANAL",
+            ),
+        ]
+
+        pdf_bytes = build_report_pdf(informe_tables, selected_date)
+        st.download_button(
+            "Exportar informe PDF",
+            data=pdf_bytes,
+            file_name=f"informe_venta_{selected_date.strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
+
+        render_exec_table(*informe_tables[0])
+
+        left, right = st.columns(2)
+        with left:
+            render_exec_table(*informe_tables[1])
+            render_exec_table(*informe_tables[2])
+            render_exec_table(*informe_tables[3])
+        with right:
+            render_exec_table(*informe_tables[4])
+            render_exec_table(*informe_tables[5])
+            render_exec_table(*informe_tables[6])
+
+    with tab_aa:
+        if annual_info is None or annual_filtered is None or annual_filtered.empty:
+            st.warning("No se encontro archivo de venta anual para comparacion AA")
+        else:
+            curve = year_comparison_curve(daily, annual_daily, selected_date)
+            if curve.empty:
+                st.info("No hay datos AA para el periodo y filtros seleccionados.")
+            else:
+                fig = px.line(
+                    curve,
+                    x="fecha_comparativa",
+                    y="hl",
+                    color="serie",
+                    markers=True,
+                    title="Curva comparativa: venta diaria actual vs AA",
+                    color_discrete_map={
+                        "Venta diaria actual": "#1463ff",
+                        "Venta diaria AA": "#f79009",
+                    },
+                )
+                fig.update_xaxes(title_text="Fecha comparable")
+                fig.update_yaxes(title_text="HL")
+                st.plotly_chart(chart_layout(fig), width="stretch")
+
+            aa_table = annual_filtered.copy()
+            aa_table["fecha_comparativa"] = aa_table["fecha"] + pd.DateOffset(years=1)
+            report = aa_daily_report(filtered, annual_filtered)
+            st.subheader("Informe diario con columna AA")
+            st.dataframe(
+                report.style.format(
+                    {
+                        "HL actual": format_hl,
+                        "AA": format_hl,
+                        "Tendencia vs AA": format_pct,
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.subheader("Base historica AA filtrada")
+            st.dataframe(
+                aa_table[
+                    [
+                        "fecha",
+                        "fecha_comparativa",
+                        "division",
+                        "unidad_negocio",
+                        "calibre",
+                        "mesa",
+                        "canal",
+                        "supervisor",
+                        "promotor",
+                        "hl",
+                    ]
+                ].sort_values("fecha", ascending=False),
+                width="stretch",
+                hide_index=True,
+            )
+
+    with tab_rankings:
+        left, right = st.columns(2)
+        for container, column, title, colors in [
+            (left, "supervisor", "Ranking de supervisores", ["#12b76a", "#1463ff"]),
+            (right, "promotor", "Ranking de promotores", ["#f79009", "#f04438"]),
+        ]:
+            ranking = filtered.groupby(column, as_index=False)["hl"].sum().sort_values("hl", ascending=False).head(15)
+            fig = px.bar(
+                ranking,
+                x="hl",
+                y=column,
+                orientation="h",
+                title=title,
+                color="hl",
+                color_continuous_scale=colors,
+            )
+            container.plotly_chart(chart_layout(fig), width="stretch")
+
+    with tab_promoters:
+        promoter_table = promoter_planning_table(filtered, selected_date)
+        st.dataframe(
+            promoter_table.style.format(
+                {
+                    "HL dia actual": format_hl,
+                    "Promedio 28": format_hl,
+                    "Mediana 28": format_hl,
+                    "Min planificable": format_hl,
+                    "Prom planificable": format_hl,
+                    "Max planificable": format_hl,
+                    "Vendido 30 dias": format_hl,
+                    "Vendido 60 dias": format_hl,
+                    "Vendido 90 dias": format_hl,
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with tab_planning:
+        table = planning_table(filtered, selected_date)
+        st.dataframe(
+            table.style.format(
+                {
+                    "Minimo planificable": format_hl,
+                    "Mediana": format_hl,
+                    "Promedio": format_hl,
+                    "Maximo planificable": format_hl,
+                    "Min historico": format_hl,
+                    "Max historico": format_hl,
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with tab_base:
+        st.caption(f"{len(filtered):,} filas filtradas de {len(df):,} filas normalizadas.".replace(",", "."))
+        st.dataframe(filtered.sort_values("fecha", ascending=False), width="stretch", hide_index=True)
+
+
+if __name__ == "__main__":
+    main()
