@@ -42,6 +42,7 @@ CANAL_ORDER = ["K+T", "AUTOSERVICIO", "MAYORISTA", "REF", "NO"]
 DIVISION_REPORT_ORDER = [
     "TOTAL CVZA",
     "TOTAL UNG",
+    "CVZA CORE + VALUE",
     "CVZA CORE",
     "CVZA VALUE",
     "CVZA CORE +",
@@ -54,13 +55,14 @@ DIVISION_REPORT_ORDER = [
 ]
 REPORT_TOTAL_UNITS = {"CZA", "UNG", "AGUAS ECO", "VINO", "ADYACENCIAS"}
 DEFAULT_OBJECTIVES_ROWS = [
-    {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": 4060.0},
-    {"seccion": "", "item": "TOTAL UNG", "OBJ VTAS": 3098.0},
-    {"seccion": "", "item": "CZA", "OBJ VTAS": 4060.0},
-    {"seccion": "", "item": "UNG", "OBJ VTAS": 3098.0},
-    {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": 267.0},
-    {"seccion": "", "item": "VINO", "OBJ VTAS": 41.0},
-    {"seccion": "", "item": "ADYACENCIAS", "OBJ VTAS": 0.48},
+    {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": 3633.51},
+    {"seccion": "", "item": "TOTAL UNG", "OBJ VTAS": 2923.65},
+    {"seccion": "", "item": "CZA", "OBJ VTAS": 3633.51},
+    {"seccion": "", "item": "UNG", "OBJ VTAS": 2923.65},
+    {"seccion": "", "item": "CVZA HE", "OBJ VTAS": 952.22},
+    {"seccion": "", "item": "CVZA CORE + VALUE", "OBJ VTAS": 2681.29},
+    {"seccion": "", "item": "MIX PREMIUM", "OBJ VTAS": 26.2},
+    {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": 240.84},
 ]
 PROMOTER_MESA_MAP = {
     "NICASTRO LUCAS": "ismael bruno",
@@ -1484,6 +1486,11 @@ def executive_summary_table(
         order_map = {name: index for index, name in enumerate(DIVISION_REPORT_ORDER)}
         table["_orden"] = table[first_col].map(order_map).fillna(len(DIVISION_REPORT_ORDER))
         table = table.sort_values(["_orden", "ACUM. ACTUAL"], ascending=[True, False]).drop(columns=["_orden"])
+        core_value_parts = ["CVZA CORE", "CVZA VALUE", "CVZA CORE +"]
+        if "CVZA CORE + VALUE" in table[first_col].values:
+            source_rows = table[table[first_col].isin(core_value_parts)]
+            for column in ["ACUM ANT.", "ACUM. ACTUAL", "HOY", "TENDENCIA", "AA"]:
+                table.loc[table[first_col] == "CVZA CORE + VALUE", column] = source_rows[column].sum()
         for label, business in (("TOTAL CVZA", "CZA"), ("TOTAL UNG", "UNG")):
             current_business = current_df[current_df["unidad_negocio"] == business] if "unidad_negocio" in current_df.columns else current_df.iloc[0:0]
             annual_business = (
@@ -1506,6 +1513,21 @@ def executive_summary_table(
                 if label in table[first_col].values:
                     for column in table.columns:
                         table.loc[table[first_col] == label, column] = total_row.get(column, np.nan)
+        for pct_column in ["TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"]:
+            table[pct_column] = np.nan
+        valid_aa = table["AA"].fillna(0) != 0
+        if valid_aa.any():
+            table.loc[valid_aa, "TENDENCIA VS AA"] = (
+                table.loc[valid_aa, "TENDENCIA"] / table.loc[valid_aa, "AA"] * 100
+            )
+        valid_objective = table["OBJ VTAS"].fillna(0) != 0
+        if valid_objective.any():
+            table.loc[valid_objective, "OBJ VS VENTAS"] = (
+                table.loc[valid_objective, "ACUM. ACTUAL"] / table.loc[valid_objective, "OBJ VTAS"] * 100
+            )
+            table.loc[valid_objective, "TEND VS VENTAS"] = (
+                table.loc[valid_objective, "TENDENCIA"] / table.loc[valid_objective, "OBJ VTAS"] * 100
+            )
 
     if total_label:
         if group_col == "division_informe":
@@ -1922,14 +1944,31 @@ def main() -> None:
     )
 
     with tab_overview:
-        line = px.line(
-            daily,
-            x="fecha",
-            y="hl",
-            markers=True,
-            title="HL diarios",
-            color_discrete_sequence=["#1463ff"],
-        )
+        overview_curve = year_comparison_curve(daily, annual_daily, selected_date)
+        if overview_curve.empty or overview_curve["serie"].nunique() == 1:
+            line = px.line(
+                daily,
+                x="fecha",
+                y="hl",
+                markers=True,
+                title="HL diarios",
+                color_discrete_sequence=["#1463ff"],
+            )
+        else:
+            line = px.line(
+                overview_curve,
+                x="fecha_comparativa",
+                y="hl",
+                color="serie",
+                markers=True,
+                title="HL diarios: actual vs año anterior",
+                color_discrete_map={
+                    "Venta diaria actual": "#1463ff",
+                    "Venta diaria AA": "#f79009",
+                },
+            )
+            line.update_xaxes(title_text="Fecha comparable")
+        line.update_yaxes(title_text="HL")
         st.plotly_chart(chart_layout(line), width="stretch")
 
         left, right = st.columns(2)
