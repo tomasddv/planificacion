@@ -162,17 +162,28 @@ function guardarPlanificacionDesdeDash(payload) {
     if (!focoTitulo || !promotor) {
       return;
     }
-    const ubicacion = buscarCeldaPlanificacion(ss, focoTitulo, promotor);
-    if (!ubicacion) {
-      errores.push(`${row.foco} / ${row.promotor}`);
-      return;
-    }
-    ubicacion.sheet.getRange(ubicacion.row, ubicacion.col).setValue(row.planificado === "" ? "" : Number(row.planificado));
-    upsertBDPlanificacion(ss, {
+    const baseRow = {
       fecha: payload.fecha || row.fecha || "",
       foco: focoTitulo,
       promotor: promotor,
       planificado: row.planificado === "" ? "" : Number(row.planificado),
+      supervisor: "",
+      celda: "",
+      actualizado: updatedAt,
+    };
+    const ubicacion = buscarCeldaPlanificacion(ss, focoTitulo, promotor);
+    if (!ubicacion) {
+      errores.push(`${row.foco} / ${row.promotor}`);
+      upsertBDPlanificacion(ss, baseRow);
+      escritos += 1;
+      return;
+    }
+    ubicacion.sheet.getRange(ubicacion.row, ubicacion.col).setValue(row.planificado === "" ? "" : Number(row.planificado));
+    upsertBDPlanificacion(ss, {
+      fecha: baseRow.fecha,
+      foco: focoTitulo,
+      promotor: promotor,
+      planificado: baseRow.planificado,
       supervisor: ubicacion.sheet.getName(),
       celda: `${ubicacion.sheet.getName()}!${colLetra(ubicacion.col)}${ubicacion.row}`,
       actualizado: updatedAt,

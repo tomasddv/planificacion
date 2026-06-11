@@ -383,7 +383,46 @@ def load_sheet(sheet_url: str) -> pd.DataFrame:
     result = pd.DataFrame(rows)
     if result.empty:
         return pd.DataFrame(columns=["supervisor", "foco", "promotor", "objetivo", "planificado", "celda_planificacion"])
-    return result.drop_duplicates(["supervisor", "foco", "promotor"], keep="last")
+    result = result.drop_duplicates(["supervisor", "foco", "promotor"], keep="last")
+    db_plan = parse_planning_db(workbook)
+    if not db_plan.empty:
+        result["promotor_key"] = result["promotor"].map(normalize_promoter)
+        result["foco_key"] = result["foco"].map(normalize_focus)
+        result = result.merge(
+            db_plan[["promotor_key", "foco_key", "planificado_db"]],
+            on=["promotor_key", "foco_key"],
+            how="left",
+        )
+        result["planificado"] = result["planificado_db"].combine_first(result["planificado"])
+        result = result.drop(columns=["promotor_key", "foco_key", "planificado_db"])
+    return result
+
+
+def parse_planning_db(workbook: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    db_sheet = next((sheet for name, sheet in workbook.items() if clean_text(name) == "BD PLANIFICACION"), None)
+    if db_sheet is None or db_sheet.empty:
+        return pd.DataFrame(columns=["promotor_key", "foco_key", "planificado_db"])
+    header = [clean_text(value) for value in db_sheet.iloc[0].tolist()]
+    col_map = {name: idx for idx, name in enumerate(header)}
+    required = {"FOCO", "PROMOTOR", "PLANIFICADO"}
+    if not required.issubset(col_map):
+        return pd.DataFrame(columns=["promotor_key", "foco_key", "planificado_db"])
+    rows = []
+    for _, row in db_sheet.iloc[1:].iterrows():
+        focus = normalize_focus(row.iloc[col_map["FOCO"]])
+        promoter = normalize_promoter(row.iloc[col_map["PROMOTOR"]])
+        plan = parse_number(row.iloc[col_map["PLANIFICADO"]])
+        if focus and promoter and not pd.isna(plan):
+            rows.append(
+                {
+                    "promotor_key": promoter,
+                    "foco_key": focus,
+                    "planificado_db": plan,
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=["promotor_key", "foco_key", "planificado_db"])
+    return pd.DataFrame(rows).drop_duplicates(["promotor_key", "foco_key"], keep="last")
 
 
 @st.cache_data(show_spinner=False, ttl=120)
@@ -758,8 +797,6 @@ def save_to_sheet(webapp_url: str, selected_date: pd.Timestamp, focus: str, data
     result = json.loads(body)
     if not result.get("ok"):
         raise RuntimeError(result.get("error", body))
-    if rows and int(result.get("escritos", 0)) == 0:
-        raise RuntimeError("Apps Script respondio OK pero no escribio filas. Falta redeployar la ultima version del script.")
     return result
 
 
@@ -908,7 +945,14 @@ def main() -> None:
             if st.button("Guardar planificado en Sheet", key=f"save_{focus}", width="stretch"):
                 try:
                     result = save_to_sheet(webapp_url, selected_date, focus, edited)
-                    st.success(f"Guardado en Sheet. Filas escritas: {result.get('escritos', 0)}")
+                    escritos = int(result.get("escritos", 0))
+                    if escritos > 0:
+                        st.success(f"Guardado en Sheet. Filas escritas: {escritos}")
+                    else:
+                        st.warning(
+                            "Apps Script respondio, pero no escribio filas. "
+                            "Pega y redeploya la ultima version de crear_sheet_planificacion.gs."
+                        )
                     st.cache_data.clear()
                 except Exception as exc:
                     st.error(f"No pude guardar en Sheet: {exc}")
