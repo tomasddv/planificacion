@@ -1453,6 +1453,15 @@ def format_pct(value: float | None) -> str:
     return f"{value:+.1f}%".replace(".", ",")
 
 
+def valid_nonzero(value: object) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    try:
+        return float(value) != 0
+    except (TypeError, ValueError):
+        return False
+
+
 def metric_card(title: str, value: str, sub: str, accent: str = "blue") -> None:
     st.markdown(
         f"""
@@ -1839,9 +1848,9 @@ def render_planner_table(title: str, focus_name: str, table: pd.DataFrame) -> No
         "MEDIA NEC.": table["MEDIA NEC."].sum(min_count=1),
         "MEDIA REAL": table["MEDIA REAL"].sum(min_count=1),
     }
-    total["AVANCE"] = total["REAL"] / total["PLANIFICADO"] * 100 if total["PLANIFICADO"] and not pd.isna(total["PLANIFICADO"]) else np.nan
-    total["VS MEDIA NEC."] = total["REAL"] / total["MEDIA NEC."] * 100 if total["MEDIA NEC."] and not pd.isna(total["MEDIA NEC."]) else np.nan
-    total["VS MEDIA REAL"] = total["REAL"] / total["MEDIA REAL"] * 100 if total["MEDIA REAL"] and not pd.isna(total["MEDIA REAL"]) else np.nan
+    total["AVANCE"] = total["REAL"] / total["PLANIFICADO"] * 100 if valid_nonzero(total["PLANIFICADO"]) else np.nan
+    total["VS MEDIA NEC."] = total["REAL"] / total["MEDIA NEC."] * 100 if valid_nonzero(total["MEDIA NEC."]) else np.nan
+    total["VS MEDIA REAL"] = total["REAL"] / total["MEDIA REAL"] * 100 if valid_nonzero(total["MEDIA REAL"]) else np.nan
 
     total_cells = ["<td>TOTAL</td>"]
     for column in headers[1:]:
@@ -2101,12 +2110,12 @@ def executive_summary_table(
         total["TENDENCIA VS AA"] = total["TENDENCIA"] / total["AA"] * 100 if total["AA"] else np.nan
         total["OBJ VS VENTAS"] = (
             total["ACUM. ACTUAL"] / total["OBJ VTAS"] * 100
-            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            if valid_nonzero(total["OBJ VTAS"])
             else np.nan
         )
         total["TEND VS VENTAS"] = (
             total["TENDENCIA"] / total["OBJ VTAS"] * 100
-            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            if valid_nonzero(total["OBJ VTAS"])
             else np.nan
         )
         table = pd.concat([pd.DataFrame([total]), table], ignore_index=True)
@@ -2260,6 +2269,108 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
         elements.append(report_table)
         elements.append(Spacer(1, 8))
         if index in {3}:
+            elements.append(PageBreak())
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def planner_table_for_pdf(table: pd.DataFrame) -> list[list[str]]:
+    columns = ["promotor", "OBJETIVO MES", "ACUM. ANT.", "PLANIFICADO", "REAL", "AVANCE", "MEDIA NEC.", "MEDIA REAL", "VS MEDIA NEC.", "VS MEDIA REAL"]
+    headers = ["VENDEDOR", "OBJ MES", "ACUM ANT", "PLANIF", "REAL", "AVANCE", "MEDIA NEC", "MEDIA REAL", "VS M. NEC", "VS M. REAL"]
+    output = [headers]
+    percent_cols = {"AVANCE", "VS MEDIA NEC.", "VS MEDIA REAL"}
+    for _, row in table[columns].iterrows():
+        output.append(
+            [
+                str(row["promotor"]),
+                format_hl(row["OBJETIVO MES"]),
+                format_hl(row["ACUM. ANT."]),
+                format_hl(row["PLANIFICADO"]),
+                format_hl(row["REAL"]),
+                format_planner_value(row["AVANCE"], True),
+                format_hl(row["MEDIA NEC."]),
+                format_hl(row["MEDIA REAL"]),
+                format_planner_value(row["VS MEDIA NEC."], True),
+                format_planner_value(row["VS MEDIA REAL"], True),
+            ]
+        )
+    return output
+
+
+def build_planner_pdf(tables: list[tuple[str, str, pd.DataFrame]], selected_date: pd.Timestamp) -> bytes:
+    buffer = io.BytesIO()
+    page_width, _ = landscape(A4)
+    margin = 16
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=margin,
+        leftMargin=margin,
+        topMargin=16,
+        bottomMargin=16,
+        title="Cierre planificador diario",
+    )
+    usable_width = page_width - 2 * margin
+    title_style = ParagraphStyle(
+        "PlannerPdfTitle",
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        leading=18,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=8,
+    )
+    section_style = ParagraphStyle(
+        "PlannerPdfSection",
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=11,
+        textColor=colors.HexColor("#111827"),
+        spaceBefore=5,
+        spaceAfter=3,
+    )
+    elements = [Paragraph(f"Cierre planificador diario - {selected_date.strftime('%d/%m/%Y')}", title_style)]
+    col_widths = [usable_width * 0.22] + [usable_width * 0.078] * 9
+    header_color = colors.HexColor("#0070C0")
+    yellow = colors.HexColor("#FFD966")
+    good = colors.HexColor("#C6EFCE")
+    bad = colors.HexColor("#FFC7CE")
+
+    for index, (title, caption, table) in enumerate(tables):
+        if table.empty:
+            continue
+        elements.append(Paragraph(f"{title} - {caption}", section_style))
+        pdf_data = planner_table_for_pdf(table)
+        pdf_table = Table(pdf_data, colWidths=col_widths, repeatRows=1)
+        style_commands = [
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 6.3),
+            ("FONTSIZE", (0, 1), (-1, -1), 6.1),
+            ("BACKGROUND", (0, 0), (-1, 0), header_color),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND", (3, 0), (3, 0), yellow),
+            ("BACKGROUND", (8, 0), (9, 0), yellow),
+            ("TEXTCOLOR", (3, 0), (3, 0), colors.black),
+            ("TEXTCOLOR", (8, 0), (9, 0), colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.black),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        ]
+        for row_index, (_, row) in enumerate(table.iterrows(), start=1):
+            for col_index, column in ((5, "AVANCE"), (8, "VS MEDIA NEC."), (9, "VS MEDIA REAL")):
+                if pd.isna(row[column]):
+                    continue
+                style_commands.append(("BACKGROUND", (col_index, row_index), (col_index, row_index), good if row[column] >= 100 else bad))
+        pdf_table.setStyle(TableStyle(style_commands))
+        elements.append(pdf_table)
+        elements.append(Spacer(1, 7))
+        if index == 1:
             elements.append(PageBreak())
 
     doc.build(elements)
@@ -2635,6 +2746,7 @@ def main() -> None:
             "Foco 3 - Total UNG 2026": "TOTAL UNG",
             "Foco 4 - Total Aguas 2026": "TOTAL AGUAS",
         }
+        planner_pdf_tables: list[tuple[str, str, pd.DataFrame]] = []
         focus_tabs = st.tabs([name.replace(" - ", "\n") for name in PLANNER_FOCUS_RULES])
         for focus_tab, focus_name in zip(focus_tabs, PLANNER_FOCUS_RULES):
             with focus_tab:
@@ -2696,7 +2808,24 @@ def main() -> None:
                         display_table["REAL"] / display_table["PLANIFICADO"] * 100,
                         np.nan,
                     )
+                    planner_pdf_tables.append(
+                        (
+                            planner_titles.get(focus_name, focus_name),
+                            PLANNER_FOCUS_RULES[focus_name]["caption"],
+                            display_table.copy(),
+                        )
+                    )
                     render_planner_table(planner_titles.get(focus_name, focus_name), focus_name, display_table)
+
+        if planner_pdf_tables:
+            planner_pdf = build_planner_pdf(planner_pdf_tables, selected_date)
+            st.download_button(
+                "Generar PDF cierre del dia",
+                data=planner_pdf,
+                file_name=f"cierre_planificador_{selected_date.strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
 
     with tab_aa:
         if annual_info is None or annual_filtered is None or annual_filtered.empty:
