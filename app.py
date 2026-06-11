@@ -1048,8 +1048,16 @@ def planner_webapp_url() -> str:
     return "" if url.upper().startswith("PEGAR_") else url
 
 
+def spreadsheet_col_letter(col_number: int) -> str:
+    letters = ""
+    while col_number > 0:
+        col_number, remainder = divmod(col_number - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
 def spreadsheet_cell(row_index: int, col_index: int) -> str:
-    return f"{colLetra(col_index + 1)}{row_index + 1}"
+    return f"{spreadsheet_col_letter(col_index + 1)}{row_index + 1}"
 
 
 def parse_planning_sheet_workbook(workbook: dict[str, pd.DataFrame], selected_date: pd.Timestamp) -> pd.DataFrame:
@@ -1064,29 +1072,31 @@ def parse_planning_sheet_workbook(workbook: dict[str, pd.DataFrame], selected_da
                 header_idx = None
                 for candidate in range(row_idx, min(row_idx + 8, len(raw))):
                     row_values = [clean_name(value) for value in raw.iloc[candidate].tolist()]
-                    has_promoter = any("PROMOTOR" in value for value in row_values)
-                    has_plan = any("PLANIFIC" in value for value in row_values)
+                    has_promoter = any("promotor" in value for value in row_values)
+                    has_plan = any("planific" in value for value in row_values)
                     if has_promoter and has_plan:
                         header_idx = candidate
                         break
                 if header_idx is None:
                     continue
                 header = [clean_name(value) for value in raw.iloc[header_idx].tolist()]
-                promoter_col = next((i for i, value in enumerate(header) if "PROMOTOR" in value), None)
-                plan_col = next((i for i, value in enumerate(header) if "PLANIFIC" in value), None)
+                search_from = max(0, col_idx - 1)
+                search_to = min(len(header), col_idx + 5)
+                header_scope = list(enumerate(header[search_from:search_to], start=search_from))
+                promoter_col = next((i for i, value in header_scope if "promotor" in value), None)
+                plan_col = next((i for i, value in header_scope if "planific" in value), None)
                 if promoter_col is None or plan_col is None:
                     continue
-                objective_col = next((i for i, value in enumerate(header) if "OBJET" in value), None)
+                objective_col = next((i for i, value in header_scope if "objet" in value), None)
                 for detail_idx in range(header_idx + 1, len(raw)):
                     promoter = normalize_vendor_name(raw.iat[detail_idx, promoter_col])
                     if not promoter:
                         continue
-                    if "TOTAL" in clean_name(promoter):
+                    promoter_clean = clean_name(promoter)
+                    if "total" in promoter_clean or "promotor" in promoter_clean:
                         break
                     plan_value = parse_objective_cell(raw.iat[detail_idx, plan_col])
                     objective_value = parse_objective_cell(raw.iat[detail_idx, objective_col]) if objective_col is not None else np.nan
-                    if pd.isna(plan_value) and pd.isna(objective_value):
-                        continue
                     rows.append(
                         {
                             "fecha": pd.Timestamp(selected_date).normalize(),
@@ -1691,7 +1701,7 @@ def build_daily_planner_table(
     table["OBJETIVO MES"] = table["objetivo_mes"]
     table["DIAS HABILES MES"] = selling_days_in_month(selected_date)
     table["DIAS RESTANTES"] = remaining_days
-    table["PLANIFICADO"] = table["planificado"]
+    table["PLANIFICADO"] = table["planificado"].fillna(0.0)
     table["MEDIA NEC."] = np.where(
         (table["OBJETIVO MES"].fillna(0) != 0) & (remaining_days > 0),
         (table["OBJETIVO MES"] - table["ACUM. ANT."]) / remaining_days,
