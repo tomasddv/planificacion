@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, SimpleDocTemplate, Spacer, Table, TableStyle
 
 import app as sales_app
 
@@ -770,6 +770,92 @@ def planner_pdf_bytes(focus: str, selected_date: pd.Timestamp, edited: pd.DataFr
     return buffer.getvalue()
 
 
+def all_focus_pdf_bytes(selected_date: pd.Timestamp, focus_payloads: list[dict[str, object]]) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=14,
+        rightMargin=14,
+        topMargin=14,
+        bottomMargin=14,
+    )
+    elements = []
+    main_title = Table([[f"PLANIFICACION PROMOTORES - {selected_date.strftime('%d/%m/%Y')}"]], colWidths=[810])
+    main_title.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#111827")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 15),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    elements.extend([main_title, Spacer(1, 8)])
+
+    for index, payload in enumerate(focus_payloads):
+        focus = str(payload["focus"])
+        progress = payload["progress"].copy()
+        title = Table([[focus]], colWidths=[810])
+        title.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(FOCUS_COLORS.get(focus, "#0b63ce"))),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 11),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        rows = [["Supervisor", "Promotor", "Planif.", "Real", "Avance", "Media nec.", "Media real", "Vs media", "Vs media real"]]
+        for _, row in progress.sort_values(["supervisor", "promotor"]).iterrows():
+            rows.append(
+                [
+                    row["supervisor"],
+                    row["promotor"],
+                    format_number(row["planificado"]),
+                    format_number(row["real"]),
+                    "-" if pd.isna(row["avance"]) else f"{row['avance']:.0f}%",
+                    format_number(row["media_necesaria"]),
+                    format_number(row["media_real"]),
+                    "-" if pd.isna(row["vs_media_necesaria"]) else f"{row['vs_media_necesaria']:.0f}%",
+                    "-" if pd.isna(row["vs_media_real"]) else f"{row['vs_media_real']:.0f}%",
+                ]
+            )
+        table = Table(rows, colWidths=[95, 150, 60, 60, 55, 75, 75, 70, 80], repeatRows=1)
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#111827")),
+            ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ]
+        for row_idx, (_, row) in enumerate(progress.sort_values(["supervisor", "promotor"]).iterrows(), start=1):
+            for col_idx, col_name in ((4, "avance"), (7, "vs_media_necesaria"), (8, "vs_media_real")):
+                value = row[col_name]
+                if not pd.isna(value):
+                    style.append(("BACKGROUND", (col_idx, row_idx), (col_idx, row_idx), colors.HexColor("#c6efce") if value >= 100 else colors.HexColor("#ffc7ce")))
+        table.setStyle(TableStyle(style))
+        elements.extend([title, table, Spacer(1, 8)])
+        if index == 1 and len(focus_payloads) > 2:
+            elements.append(PageBreak())
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def save_to_sheet(webapp_url: str, selected_date: pd.Timestamp, focus: str, data: pd.DataFrame) -> dict[str, object]:
     rows = []
     for _, row in data.iterrows():
@@ -809,11 +895,31 @@ def page_style() -> None:
             background: radial-gradient(circle at top right, #d9fbff 0, #f5f8ff 32%, #eef3fb 100%);
             color: #0f172a;
         }
+        .stApp, .stApp p, .stApp label, .stApp span, .stApp div, .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+            color: #0f172a;
+        }
         section[data-testid="stSidebar"] {
             background: #0f1b3d;
             color: #ffffff;
         }
         section[data-testid="stSidebar"] * { color: #ffffff !important; }
+        div[data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid #d8e1ef;
+            border-radius: 10px;
+            padding: 12px;
+            box-shadow: 0 12px 26px rgba(15, 23, 42, .08);
+        }
+        div[data-testid="stMetric"] * { color: #0f172a !important; }
+        div[data-testid="stTabs"] button p { color: #0f172a !important; font-weight: 800; }
+        div[data-testid="stTabs"] button[aria-selected="true"] p { color: #1463ff !important; }
+        div[data-testid="stDataFrame"] *, div[data-testid="stDataEditor"] * {
+            color: #0f172a !important;
+        }
+        input, textarea, [contenteditable="true"] {
+            color: #0f172a !important;
+            background: #ffffff !important;
+        }
         .hero {
             padding: 28px 32px;
             border-radius: 10px;
@@ -822,8 +928,9 @@ def page_style() -> None:
             box-shadow: 0 20px 45px rgba(20, 99, 255, .18);
             margin-bottom: 22px;
         }
-        .hero h1 { margin: 0 0 8px 0; color: white; font-size: 34px; }
-        .hero p { margin: 0; color: white; font-size: 16px; }
+        .hero, .hero * { color: #ffffff !important; }
+        .hero h1 { margin: 0 0 8px 0; font-size: 34px; }
+        .hero p { margin: 0; font-size: 16px; }
         div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
             border-radius: 10px;
             overflow: hidden;
@@ -891,6 +998,7 @@ def main() -> None:
         sheet_days = sheet_days[sheet_days["supervisor"].eq(supervisor)].copy()
     sheet_days = complete_days(sheet_days, planning, selected_date)
 
+    focus_payloads: list[dict[str, object]] = []
     tabs = st.tabs(FOCUS_ORDER)
     for tab, focus in zip(tabs, FOCUS_ORDER):
         with tab:
@@ -932,15 +1040,9 @@ def main() -> None:
             render_summary(summary)
 
             progress = build_focus_progress(edited, sheet_days, sales, focus, selected_date)
+            focus_payloads.append({"focus": focus, "edited": edited.copy(), "summary": summary.copy(), "progress": progress.copy()})
             st.markdown("#### Avance del dia")
             render_progress_table(focus, progress)
-            st.download_button(
-                "Exportar PDF del foco",
-                data=planner_pdf_bytes(focus, selected_date, edited, summary, progress),
-                file_name=f"planificacion_{focus.lower().replace(' ', '_')}_{selected_date.strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
-                width="stretch",
-            )
 
             if st.button("Guardar planificado en Sheet", key=f"save_{focus}", width="stretch"):
                 try:
@@ -956,6 +1058,16 @@ def main() -> None:
                     st.cache_data.clear()
                 except Exception as exc:
                     st.error(f"No pude guardar en Sheet: {exc}")
+
+    if focus_payloads:
+        st.divider()
+        st.download_button(
+            "Exportar PDF completo - 4 focos",
+            data=all_focus_pdf_bytes(selected_date, focus_payloads),
+            file_name=f"planificacion_promotores_{selected_date.strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
 
 
 if __name__ == "__main__":
