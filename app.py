@@ -7,7 +7,6 @@ import re
 import shutil
 import unicodedata
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -1579,11 +1578,11 @@ def save_plan_to_google_sheet(selected_date: pd.Timestamp, focus_name: str, plan
             }
         )
     payload = {"fecha": pd.Timestamp(selected_date).strftime("%Y-%m-%d"), "foco": focus_name, "rows": rows}
-    data = urllib.parse.urlencode({"payload": json.dumps(payload)}).encode("utf-8")
+    data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
@@ -1591,8 +1590,14 @@ def save_plan_to_google_sheet(selected_date: pd.Timestamp, focus_name: str, plan
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.URLError as exc:
         raise RuntimeError(f"No pude escribir en el Sheet: {exc}") from exc
-    if '"ok":true' not in body.replace(" ", "").lower():
+    normalized_body = body.replace(" ", "").lower()
+    if '"ok":true' not in normalized_body:
         raise RuntimeError(f"El Sheet no confirmo guardado: {body[:300]}")
+    if rows and '"escritos":0' in normalized_body:
+        raise RuntimeError(
+            "El Sheet respondio OK pero no escribio filas. "
+            "Actualiza y redeploya el Apps Script con la ultima version de crear_sheet_planificacion.gs."
+        )
     return "Google Sheet"
 
 
@@ -2912,9 +2917,12 @@ def main() -> None:
                     },
                 )
                 if st.button("Guardar planificado del dia", key=f"save_daily_plan_{focus_name}", width="stretch"):
-                    saved_path = save_daily_plan(selected_date, focus_name, edited_plan)
-                    st.success(f"Planificado guardado en {saved_path}")
-                    st.rerun()
+                    try:
+                        saved_path = save_daily_plan(selected_date, focus_name, edited_plan)
+                        st.success(f"Planificado guardado en {saved_path}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"No pude guardar en Google Sheet: {exc}")
 
                 display_table = planner_table.drop(columns=["PLANIFICADO"]).merge(
                     edited_plan[["promotor", "PLANIFICADO"]],
