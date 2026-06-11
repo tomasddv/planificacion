@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
@@ -36,6 +37,9 @@ DATA_DIR_CANDIDATES = [
 VALID_EXTENSIONS = {".txt", ".csv"}
 CLIENT_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
 PLANNER_STORE_FILE_NAME = "planificador_diario_guardado.csv"
+PLANNER_DATA_DIR = Path(os.environ.get("PLANNER_DATA_DIR", PROJECT_ROOT / ".planner_data"))
+PLANNER_SHEET_NAME = "planificador_diario"
+PLANNER_COLUMNS = ["fecha", "foco", "promotor", "planificado"]
 WINDOWS = (7, 14, 21, 28)
 EXACT_MONTH_LOOKBACKS = (1, 2, 3)
 NORMALIZATION_VERSION = 4
@@ -154,7 +158,11 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
     try:
         gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False)
     except Exception as exc:
-        st.sidebar.warning(f"No pude descargar la carpeta de Google Drive: {exc}")
+        st.sidebar.warning(
+            "No pude descargar la carpeta de Google Drive en este intento. "
+            "Uso cache/carpeta local si existe. El planificado diario no se borra por este error. "
+            f"Detalle: {exc}"
+        )
         return target if target.exists() and any(target.iterdir()) else None
 
     if tmp_target.exists() and any(tmp_target.iterdir()):
@@ -1413,32 +1421,113 @@ def valid_nonzero(value: object) -> bool:
         return False
 
 
-def planner_store_path(folder: Path) -> Path:
-    return folder / PLANNER_STORE_FILE_NAME
+def planner_store_path() -> Path:
+    return PLANNER_DATA_DIR / PLANNER_STORE_FILE_NAME
 
 
-def load_saved_planner(folder: Path) -> pd.DataFrame:
-    columns = ["fecha", "foco", "promotor", "planificado"]
-    path = planner_store_path(folder)
-    if not path.exists():
-        return pd.DataFrame(columns=columns)
-    try:
-        saved = pd.read_csv(path, sep=";", dtype="string")
-    except Exception:
-        return pd.DataFrame(columns=columns)
-    for column in columns:
+def normalize_saved_planner(saved: pd.DataFrame) -> pd.DataFrame:
+    for column in PLANNER_COLUMNS:
         if column not in saved.columns:
             saved[column] = np.nan
-    saved = saved[columns].copy()
+    saved = saved[PLANNER_COLUMNS].copy()
     saved["fecha"] = pd.to_datetime(saved["fecha"], errors="coerce")
     saved["promotor"] = saved["promotor"].map(normalize_vendor_name)
     saved["planificado"] = saved["planificado"].map(parse_objective_cell)
     return saved.dropna(subset=["fecha"])
 
 
-def save_daily_plan(folder: Path, selected_date: pd.Timestamp, focus_name: str, plan_df: pd.DataFrame) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    saved = load_saved_planner(folder)
+def local_planner_load() -> pd.DataFrame:
+    path = planner_store_path()
+    if not path.exists():
+        return pd.DataFrame(columns=PLANNER_COLUMNS)
+    try:
+        saved = pd.read_csv(path, sep=";", dtype="string")
+    except Exception:
+        return pd.DataFrame(columns=PLANNER_COLUMNS)
+    return normalize_saved_planner(saved)
+
+
+def local_planner_save(saved: pd.DataFrame) -> str:
+    PLANNER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output = saved.copy()
+    output["fecha"] = pd.to_datetime(output["fecha"]).dt.strftime("%Y-%m-%d")
+    path = planner_store_path()
+    output.to_csv(path, sep=";", index=False)
+    return str(path)
+
+
+def google_sheet_id() -> str:
+    raw = secret_or_env("GOOGLE_SHEET_ID")
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", raw)
+    return match.group(1) if match else raw
+
+
+def google_service_account_info() -> dict | None:
+    raw = secret_or_env("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def planner_sheet_configured() -> bool:
+    return bool(google_sheet_id() and google_service_account_info())
+
+
+def planner_worksheet():
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    info = google_service_account_info()
+    sheet_id = google_sheet_id()
+    if not info or not sheet_id:
+        raise RuntimeError("Google Sheet no configurado.")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    credentials = Credentials.from_service_account_info(info, scopes=scopes)
+    client = gspread.authorize(credentials)
+    spreadsheet = client.open_by_key(sheet_id)
+    try:
+        worksheet = spreadsheet.worksheet(PLANNER_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=PLANNER_SHEET_NAME, rows=1000, cols=len(PLANNER_COLUMNS))
+        worksheet.update([PLANNER_COLUMNS], "A1")
+    values = worksheet.get_all_values()
+    if not values:
+        worksheet.update([PLANNER_COLUMNS], "A1")
+    return worksheet
+
+
+def sheet_planner_load() -> pd.DataFrame:
+    worksheet = planner_worksheet()
+    records = worksheet.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=PLANNER_COLUMNS)
+    return normalize_saved_planner(pd.DataFrame(records))
+
+
+def sheet_planner_save(saved: pd.DataFrame) -> str:
+    worksheet = planner_worksheet()
+    output = saved.copy()
+    output["fecha"] = pd.to_datetime(output["fecha"]).dt.strftime("%Y-%m-%d")
+    values = [PLANNER_COLUMNS] + output[PLANNER_COLUMNS].fillna("").astype(str).values.tolist()
+    worksheet.clear()
+    worksheet.update(values, "A1")
+    return f"Google Sheet / {PLANNER_SHEET_NAME}"
+
+
+def load_saved_planner() -> pd.DataFrame:
+    if planner_sheet_configured():
+        try:
+            return sheet_planner_load()
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer planificado desde Google Sheets; uso CSV local: {exc}")
+    return local_planner_load()
+
+
+def save_daily_plan(selected_date: pd.Timestamp, focus_name: str, plan_df: pd.DataFrame) -> str:
+    saved = load_saved_planner()
     new_rows = plan_df[["promotor", "PLANIFICADO"]].copy()
     new_rows["promotor"] = new_rows["promotor"].map(normalize_vendor_name)
     new_rows["planificado"] = pd.to_numeric(new_rows["PLANIFICADO"], errors="coerce")
@@ -1449,10 +1538,22 @@ def save_daily_plan(folder: Path, selected_date: pd.Timestamp, focus_name: str, 
         same_key = (saved["fecha"] == pd.Timestamp(selected_date).normalize()) & (saved["foco"] == focus_name)
         saved = saved.loc[~same_key].copy()
     output = pd.concat([saved, new_rows], ignore_index=True)
-    output["fecha"] = pd.to_datetime(output["fecha"]).dt.strftime("%Y-%m-%d")
-    path = planner_store_path(folder)
-    output.to_csv(path, sep=";", index=False)
-    return path
+    if planner_sheet_configured():
+        try:
+            return sheet_planner_save(output)
+        except Exception as exc:
+            st.warning(f"No pude guardar en Google Sheets; guardo en CSV local: {exc}")
+    return local_planner_save(output)
+
+
+def replace_saved_planner(saved: pd.DataFrame) -> str:
+    saved = normalize_saved_planner(saved)
+    if planner_sheet_configured():
+        try:
+            return sheet_planner_save(saved)
+        except Exception as exc:
+            st.warning(f"No pude restaurar en Google Sheets; guardo en CSV local: {exc}")
+    return local_planner_save(saved)
 
 
 def filter_focus(df: pd.DataFrame, focus_name: str) -> pd.DataFrame:
@@ -2344,7 +2445,7 @@ def main() -> None:
             )
         except Exception as exc:
             st.sidebar.warning(f"No pude leer objetivos por vendedor/segmento: {exc}")
-    saved_planner_df = load_saved_planner(DEFAULT_DATA_DIR)
+    saved_planner_df = load_saved_planner()
 
     annual_df: pd.DataFrame | None = None
     annual_info: SourceInfo | None = None
@@ -2379,6 +2480,15 @@ def main() -> None:
         st.sidebar.success(f"Objetivos vendedor: {planner_objectives_info.label}")
     else:
         st.sidebar.info("Planificador: falta archivo de objetivos por vendedor/segmento")
+    planner_path = planner_store_path()
+    if planner_sheet_configured():
+        st.sidebar.success(f"Plan guardado: Google Sheets / {PLANNER_SHEET_NAME}")
+        st.sidebar.caption(f"Sheet ID: {google_sheet_id()}")
+    elif planner_path.exists():
+        st.sidebar.success(f"Plan guardado: {planner_path.name}")
+        st.sidebar.caption(str(planner_path))
+    else:
+        st.sidebar.info("Plan guardado: CSV local hasta configurar Google Sheets")
     if aux_info is not None:
         st.sidebar.success(f"Auxiliares: {aux_info.label}")
     if annual_info is not None:
@@ -2624,6 +2734,26 @@ def main() -> None:
             "Carga el PLANIFICADO a la manana y guardalo. "
             "Cuando actualices venta diaria, el REAL se cruza contra esa planificacion guardada."
         )
+        backup_cols = st.columns(2)
+        planner_path = planner_store_path()
+        with backup_cols[0]:
+            if not saved_planner_df.empty:
+                backup_df = saved_planner_df.copy()
+                backup_df["fecha"] = pd.to_datetime(backup_df["fecha"]).dt.strftime("%Y-%m-%d")
+                st.download_button(
+                    "Descargar planificado guardado",
+                    data=backup_df.to_csv(sep=";", index=False).encode("utf-8-sig"),
+                    file_name=PLANNER_STORE_FILE_NAME,
+                    mime="text/csv",
+                    width="stretch",
+                )
+        with backup_cols[1]:
+            uploaded_plan = st.file_uploader("Restaurar planificado guardado", type=["csv"], key="planner_backup_upload")
+            if uploaded_plan is not None:
+                restored = pd.read_csv(io.BytesIO(uploaded_plan.getvalue()), sep=";", dtype="string")
+                destination = replace_saved_planner(restored)
+                st.success(f"Planificado restaurado en {destination}. Actualizo la vista.")
+                st.rerun()
 
         planner_pdf_tables: list[tuple[str, str, pd.DataFrame]] = []
         focus_tabs = st.tabs([name.replace(" - ", "\n") for name in PLANNER_FOCUS_RULES])
@@ -2663,7 +2793,7 @@ def main() -> None:
                     },
                 )
                 if st.button("Guardar planificado del dia", key=f"save_daily_plan_{focus_name}", width="stretch"):
-                    saved_path = save_daily_plan(DEFAULT_DATA_DIR, selected_date, focus_name, edited_plan)
+                    saved_path = save_daily_plan(selected_date, focus_name, edited_plan)
                     st.success(f"Planificado guardado en {saved_path}")
                     st.rerun()
 
