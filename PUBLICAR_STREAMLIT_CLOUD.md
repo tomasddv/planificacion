@@ -30,24 +30,29 @@ En Secrets pegar:
 ```toml
 GOOGLE_DRIVE_PLANIFICACION_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
 FORCE_GDRIVE_REFRESH = "false"
-GOOGLE_SHEET_ID = "PEGAR_ID_O_URL_DEL_SHEET_DE_PLANIFICACION"
-GOOGLE_SERVICE_ACCOUNT_JSON = """
-{
-  "type": "service_account",
-  "project_id": "...",
-  "private_key_id": "...",
-  "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
-  "client_email": "...@....iam.gserviceaccount.com",
-  "client_id": "...",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-  "client_x509_cert_url": "..."
-}
-"""
+PLANNER_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/PEGAR_ID_DEL_SHEET/edit?usp=sharing"
 ```
 
 Para forzar actualizacion de datos, cambiar temporalmente `FORCE_GDRIVE_REFRESH` a `"true"`, reiniciar la app y luego volverlo a `"false"`.
 
-Para que el planificador diario se guarde en Google Sheets, crear/usar un Sheet y compartirlo con el `client_email`
-del JSON de cuenta de servicio con permiso de editor. La app crea automaticamente la hoja `planificador_diario`.
+## Planificacion diaria
+
+La carga del planificado puede venir desde un Google Sheet simple, sin Google Cloud ni service account.
+
+Formato recomendado:
+
+- Un archivo de Google Sheets con una hoja por supervisor.
+- En cada hoja, cuatro cuadros con los titulos `TOTAL CERVEZAS`, `VOLUMEN ABOVE CORE`, `Total UNG` y `Aguas`.
+- Cada cuadro debe tener las columnas `Promotor`, `Objetivo` y `Planificacion`.
+- Compartir el Sheet como `Anyone with the link` con permiso de editor para que los supervisores carguen.
+- Pegar la URL del Sheet en `PLANNER_GOOGLE_SHEET_URL`.
+- En el dashboard, presionar `Actualizar datos` para releer la planificacion.
+
+La solapa `Planificador diario` tambien conserva el metodo manual:
+
+- A la manana cargar los valores y presionar `Guardar planificado del dia`.
+- Para conservarlo o usarlo en otra PC, presionar `Descargar planificado guardado`.
+- En otra PC o sesion nueva, usar `Restaurar planificado guardado` y subir ese CSV.
+- A la tarde, al actualizar `ventadiaria`, el dashboard coteja el planificado contra la venta real.
+
+Este metodo no usa Google Cloud ni service account.

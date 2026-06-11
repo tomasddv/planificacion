@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import re
 import shutil
@@ -88,6 +87,7 @@ PLANNER_OBJECTIVE_ALIASES = {
     "TOTAL CVZA": "Foco 1 - Total Cervezas 2026",
     "TOTAL CERVEZAS": "Foco 1 - Total Cervezas 2026",
     "ABOVE CORE": "Foco 2 - Above core 2026",
+    "VOLUMEN ABOVE CORE": "Foco 2 - Above core 2026",
     "TOTAL UNG": "Foco 3 - Total UNG 2026",
     "UNG": "Foco 3 - Total UNG 2026",
     "AGUAS": "Foco 4 - Total Aguas 2026",
@@ -1024,6 +1024,83 @@ def parse_cross_planner_objectives(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def google_sheet_export_url(raw_url: str) -> str:
+    raw_url = str(raw_url or "").strip()
+    if not raw_url:
+        return ""
+    if raw_url.lower().endswith((".xlsx", ".xls")) or "output=xlsx" in raw_url.lower():
+        return raw_url
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", raw_url)
+    if match:
+        return f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=xlsx"
+    return raw_url
+
+
+def planner_sheet_url() -> str:
+    return secret_or_env("PLANNER_GOOGLE_SHEET_URL")
+
+
+def parse_planning_sheet_workbook(workbook: dict[str, pd.DataFrame], selected_date: pd.Timestamp) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for sheet_name, sheet in workbook.items():
+        raw = sheet.fillna("")
+        for row_idx in range(len(raw)):
+            for col_idx in range(len(raw.columns)):
+                focus_name = normalize_planner_focus(raw.iat[row_idx, col_idx])
+                if focus_name not in PLANNER_FOCUS_RULES:
+                    continue
+                header_idx = None
+                for candidate in range(row_idx, min(row_idx + 8, len(raw))):
+                    row_values = [clean_name(value) for value in raw.iloc[candidate].tolist()]
+                    has_promoter = any("PROMOTOR" in value for value in row_values)
+                    has_plan = any("PLANIFIC" in value for value in row_values)
+                    if has_promoter and has_plan:
+                        header_idx = candidate
+                        break
+                if header_idx is None:
+                    continue
+                header = [clean_name(value) for value in raw.iloc[header_idx].tolist()]
+                promoter_col = next((i for i, value in enumerate(header) if "PROMOTOR" in value), None)
+                plan_col = next((i for i, value in enumerate(header) if "PLANIFIC" in value), None)
+                if promoter_col is None or plan_col is None:
+                    continue
+                objective_col = next((i for i, value in enumerate(header) if "OBJET" in value), None)
+                for detail_idx in range(header_idx + 1, len(raw)):
+                    promoter = normalize_vendor_name(raw.iat[detail_idx, promoter_col])
+                    if not promoter:
+                        continue
+                    if "TOTAL" in clean_name(promoter):
+                        break
+                    plan_value = parse_objective_cell(raw.iat[detail_idx, plan_col])
+                    objective_value = parse_objective_cell(raw.iat[detail_idx, objective_col]) if objective_col is not None else np.nan
+                    if pd.isna(plan_value) and pd.isna(objective_value):
+                        continue
+                    rows.append(
+                        {
+                            "fecha": pd.Timestamp(selected_date).normalize(),
+                            "foco": focus_name,
+                            "promotor": promoter,
+                            "planificado": plan_value,
+                            "objetivo_mes": objective_value,
+                            "supervisor": str(sheet_name),
+                        }
+                    )
+    if not rows:
+        return pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor"])
+    result = pd.DataFrame(rows)
+    result = result.drop_duplicates(["fecha", "foco", "promotor"], keep="last")
+    return result
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_remote_planning_sheet(raw_url: str, selected_date_text: str) -> pd.DataFrame:
+    url = google_sheet_export_url(raw_url)
+    if not url:
+        return pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor"])
+    workbook = pd.read_excel(url, sheet_name=None, header=None)
+    return parse_planning_sheet_workbook(workbook, pd.Timestamp(selected_date_text))
+
+
 @st.cache_data(show_spinner=False)
 def load_planner_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
@@ -1456,73 +1533,7 @@ def local_planner_save(saved: pd.DataFrame) -> str:
     return str(path)
 
 
-def google_sheet_id() -> str:
-    raw = secret_or_env("GOOGLE_SHEET_ID")
-    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", raw)
-    return match.group(1) if match else raw
-
-
-def google_service_account_info() -> dict | None:
-    raw = secret_or_env("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-
-
-def planner_sheet_configured() -> bool:
-    return bool(google_sheet_id() and google_service_account_info())
-
-
-def planner_worksheet():
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    info = google_service_account_info()
-    sheet_id = google_sheet_id()
-    if not info or not sheet_id:
-        raise RuntimeError("Google Sheet no configurado.")
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    credentials = Credentials.from_service_account_info(info, scopes=scopes)
-    client = gspread.authorize(credentials)
-    spreadsheet = client.open_by_key(sheet_id)
-    try:
-        worksheet = spreadsheet.worksheet(PLANNER_SHEET_NAME)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=PLANNER_SHEET_NAME, rows=1000, cols=len(PLANNER_COLUMNS))
-        worksheet.update([PLANNER_COLUMNS], "A1")
-    values = worksheet.get_all_values()
-    if not values:
-        worksheet.update([PLANNER_COLUMNS], "A1")
-    return worksheet
-
-
-def sheet_planner_load() -> pd.DataFrame:
-    worksheet = planner_worksheet()
-    records = worksheet.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=PLANNER_COLUMNS)
-    return normalize_saved_planner(pd.DataFrame(records))
-
-
-def sheet_planner_save(saved: pd.DataFrame) -> str:
-    worksheet = planner_worksheet()
-    output = saved.copy()
-    output["fecha"] = pd.to_datetime(output["fecha"]).dt.strftime("%Y-%m-%d")
-    values = [PLANNER_COLUMNS] + output[PLANNER_COLUMNS].fillna("").astype(str).values.tolist()
-    worksheet.clear()
-    worksheet.update(values, "A1")
-    return f"Google Sheet / {PLANNER_SHEET_NAME}"
-
-
 def load_saved_planner() -> pd.DataFrame:
-    if planner_sheet_configured():
-        try:
-            return sheet_planner_load()
-        except Exception as exc:
-            st.sidebar.warning(f"No pude leer planificado desde Google Sheets; uso CSV local: {exc}")
     return local_planner_load()
 
 
@@ -1538,21 +1549,11 @@ def save_daily_plan(selected_date: pd.Timestamp, focus_name: str, plan_df: pd.Da
         same_key = (saved["fecha"] == pd.Timestamp(selected_date).normalize()) & (saved["foco"] == focus_name)
         saved = saved.loc[~same_key].copy()
     output = pd.concat([saved, new_rows], ignore_index=True)
-    if planner_sheet_configured():
-        try:
-            return sheet_planner_save(output)
-        except Exception as exc:
-            st.warning(f"No pude guardar en Google Sheets; guardo en CSV local: {exc}")
     return local_planner_save(output)
 
 
 def replace_saved_planner(saved: pd.DataFrame) -> str:
     saved = normalize_saved_planner(saved)
-    if planner_sheet_configured():
-        try:
-            return sheet_planner_save(saved)
-        except Exception as exc:
-            st.warning(f"No pude restaurar en Google Sheets; guardo en CSV local: {exc}")
     return local_planner_save(saved)
 
 
@@ -2476,19 +2477,12 @@ def main() -> None:
         st.sidebar.success(f"Objetivos: {objectives_info.label}")
     else:
         st.sidebar.info("Objetivos: respaldo mayo cargado hasta que agregues objetivos.xlsx")
-    if planner_objectives_info is not None:
-        st.sidebar.success(f"Objetivos vendedor: {planner_objectives_info.label}")
-    else:
-        st.sidebar.info("Planificador: falta archivo de objetivos por vendedor/segmento")
     planner_path = planner_store_path()
-    if planner_sheet_configured():
-        st.sidebar.success(f"Plan guardado: Google Sheets / {PLANNER_SHEET_NAME}")
-        st.sidebar.caption(f"Sheet ID: {google_sheet_id()}")
-    elif planner_path.exists():
+    if planner_path.exists():
         st.sidebar.success(f"Plan guardado: {planner_path.name}")
         st.sidebar.caption(str(planner_path))
     else:
-        st.sidebar.info("Plan guardado: CSV local hasta configurar Google Sheets")
+        st.sidebar.info("Plan guardado: CSV local. Para otra PC, usar descargar/restaurar.")
     if aux_info is not None:
         st.sidebar.success(f"Auxiliares: {aux_info.label}")
     if annual_info is not None:
@@ -2503,6 +2497,42 @@ def main() -> None:
     if filtered.empty:
         st.warning("No hay datos para los filtros seleccionados.")
         st.stop()
+
+    planner_sheet_source = planner_sheet_url()
+    remote_planner_df = pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor"])
+    if planner_sheet_source:
+        try:
+            remote_planner_df = load_remote_planning_sheet(planner_sheet_source, selected_date.strftime("%Y-%m-%d"))
+            if not remote_planner_df.empty:
+                current_day = pd.Timestamp(selected_date).normalize()
+                saved_planner_df = saved_planner_df[
+                    ~(
+                        (saved_planner_df["fecha"] == current_day)
+                        & saved_planner_df["foco"].isin(remote_planner_df["foco"].unique())
+                    )
+                ].copy()
+                saved_planner_df = pd.concat(
+                    [saved_planner_df, remote_planner_df[PLANNER_COLUMNS]],
+                    ignore_index=True,
+                )
+                remote_objectives = remote_planner_df.dropna(subset=["objetivo_mes"])[
+                    ["promotor", "foco", "objetivo_mes"]
+                ].copy()
+                if not remote_objectives.empty:
+                    planner_objectives_df = pd.concat(
+                        [planner_objectives_df, remote_objectives],
+                        ignore_index=True,
+                    ).drop_duplicates(["promotor", "foco"], keep="last")
+                st.sidebar.success("Planificado: Google Sheet externo")
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer el Sheet de planificacion; uso CSV/manual: {exc}")
+
+    if not remote_planner_df.empty:
+        st.sidebar.success("Objetivos vendedor: Sheet de planificacion")
+    elif planner_objectives_info is not None:
+        st.sidebar.success(f"Objetivos vendedor: {planner_objectives_info.label}")
+    else:
+        st.sidebar.info("Planificador: falta archivo de objetivos por vendedor/segmento")
 
     historical_filtered = combine_current_with_history(filtered, annual_filtered)
     daily = filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
@@ -2722,11 +2752,14 @@ def main() -> None:
 
     with tab_daily_planner:
         st.subheader("Planificador diario")
-        if planner_objectives_info is None:
+        if planner_objectives_info is None and remote_planner_df.empty:
             st.warning(
                 "No encontre archivo de objetivos por vendedor/segmento. "
                 "Podes cargar PLANIFICADO y ver REAL, pero MEDIA NEC. queda en blanco."
             )
+        elif not remote_planner_df.empty:
+            supervisors = ", ".join(sorted(remote_planner_df["supervisor"].dropna().astype(str).unique().tolist()))
+            st.caption(f"Planificacion importada desde Google Sheet: {supervisors}")
         else:
             st.caption(f"Objetivos por vendedor/segmento: {planner_objectives_info.label}")
 
