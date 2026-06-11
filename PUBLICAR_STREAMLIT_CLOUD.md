@@ -39,6 +39,8 @@ GOOGLE_DRIVE_PLANIFICACION_URL = "https://drive.google.com/drive/folders/1cukgXL
 FORCE_GDRIVE_REFRESH = "false"
 PLANNER_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
 PLANNER_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
+BIG_DASH_URL = "https://planificacionddv.streamlit.app/"
+SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 ```
 
 Para forzar actualizacion de datos, cambiar temporalmente `FORCE_GDRIVE_REFRESH` a `"true"`, reiniciar la app y luego volverlo a `"false"`.
@@ -74,13 +76,8 @@ En el Google Sheet:
 7. Copiar la URL que termina en `/exec`.
 8. Pegar esa URL en Streamlit Secrets como `PLANNER_WEBAPP_URL`.
 
-Con esto, el usuario carga en el dashboard, el dashboard guarda en el Sheet, y cualquier PC que abra el dashboard vuelve a leer ese planificado.
+Con esto, el usuario carga en el dashboard chico de promotores, el dashboard guarda en el Sheet, y cualquier PC que abra ese dashboard vuelve a leer ese planificado.
 
-La solapa `Planificador diario` tambien conserva el metodo manual:
-
-- A la manana cargar los valores y presionar `Guardar planificado del dia`.
-- Para conservarlo o usarlo en otra PC, presionar `Descargar planificado guardado`.
-- En otra PC o sesion nueva, usar `Restaurar planificado guardado` y subir ese CSV.
-- A la tarde, al actualizar `ventadiaria`, el dashboard coteja el planificado contra la venta real.
+El dashboard grande queda solo para venta, informe, AA, rankings, promotores, planificacion historica y base normalizada.
 
 Este metodo no usa Google Cloud ni service account.

@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - app keeps working without holiday pack
 
 
 APP_TITLE = "Venta diaria HL"
+SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR_CANDIDATES = [
     PROJECT_ROOT / "planificacion",
@@ -2450,6 +2451,7 @@ def main() -> None:
     )
 
     st.sidebar.title("Datos y filtros")
+    st.sidebar.link_button("Ir al planificador", secret_or_env("SMALL_DASH_URL", SMALL_DASH_URL), width="stretch")
     st.sidebar.caption(f"Carpeta automatica: {DEFAULT_DATA_DIR}")
     if st.sidebar.button("Actualizar datos", width="stretch"):
         st.cache_data.clear()
@@ -2694,8 +2696,8 @@ def main() -> None:
                 "blue" if window == 7 else "green" if window == 14 else "orange" if window == 21 else "violet",
             )
 
-    tab_overview, tab_informe, tab_daily_planner, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
-        ["Evolucion", "Informe", "Planificador diario", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
+    tab_overview, tab_informe, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
+        ["Evolucion", "Informe", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
     )
 
     with tab_overview:
@@ -2829,128 +2831,6 @@ def main() -> None:
             render_exec_table(*informe_tables[4])
             render_exec_table(*informe_tables[5])
             render_exec_table(*informe_tables[6])
-
-    with tab_daily_planner:
-        st.subheader("Planificador diario")
-        if planner_objectives_info is None and remote_planner_df.empty:
-            st.warning(
-                "No encontre archivo de objetivos por vendedor/segmento. "
-                "Podes cargar PLANIFICADO y ver REAL, pero MEDIA NEC. queda en blanco."
-            )
-        elif not remote_planner_df.empty:
-            supervisors = ", ".join(sorted(remote_planner_df["supervisor"].dropna().astype(str).unique().tolist()))
-            st.caption(f"Planificacion importada desde Google Sheet: {supervisors}")
-        else:
-            st.caption(f"Objetivos por vendedor/segmento: {planner_objectives_info.label}")
-
-        st.caption(
-            "Carga el PLANIFICADO a la manana y guardalo. "
-            "Cuando actualices venta diaria, el REAL se cruza contra esa planificacion guardada."
-        )
-        if planner_sheet_url() and not planner_webapp_url():
-            st.warning(
-                "El dash ya tiene Sheet para lectura, pero falta PLANNER_WEBAPP_URL. "
-                "Hasta pegar esa URL, Guardar planificado del dia queda solo como respaldo local."
-            )
-        elif planner_webapp_url():
-            st.success("Guardado conectado: al presionar Guardar planificado del dia se actualiza el Google Sheet.")
-        backup_cols = st.columns(2)
-        planner_path = planner_store_path()
-        with backup_cols[0]:
-            if not saved_planner_df.empty:
-                backup_df = saved_planner_df.copy()
-                backup_df["fecha"] = pd.to_datetime(backup_df["fecha"]).dt.strftime("%Y-%m-%d")
-                st.download_button(
-                    "Descargar planificado guardado",
-                    data=backup_df.to_csv(sep=";", index=False).encode("utf-8-sig"),
-                    file_name=PLANNER_STORE_FILE_NAME,
-                    mime="text/csv",
-                    width="stretch",
-                )
-        with backup_cols[1]:
-            uploaded_plan = st.file_uploader("Restaurar planificado guardado", type=["csv"], key="planner_backup_upload")
-            if uploaded_plan is not None:
-                restored = pd.read_csv(io.BytesIO(uploaded_plan.getvalue()), sep=";", dtype="string")
-                destination = replace_saved_planner(restored)
-                st.success(f"Planificado restaurado en {destination}. Actualizo la vista.")
-                st.rerun()
-
-        planner_pdf_tables: list[tuple[str, str, pd.DataFrame]] = []
-        focus_tabs = st.tabs([name.replace(" - ", "\n") for name in PLANNER_FOCUS_RULES])
-        for focus_tab, focus_name in zip(focus_tabs, PLANNER_FOCUS_RULES):
-            with focus_tab:
-                planner_table = build_daily_planner_table(
-                    filtered,
-                    selected_date,
-                    focus_name,
-                    planner_objectives_df,
-                    saved_planner_df,
-                )
-                if planner_table.empty:
-                    st.info("No hay vendedores para este foco con los filtros seleccionados.")
-                    continue
-                editable_columns = [
-                    "mesa",
-                    "promotor",
-                    "OBJETIVO MES",
-                    "ACUM. ANT.",
-                    "DIAS HABILES MES",
-                    "DIAS RESTANTES",
-                    "PLANIFICADO",
-                ]
-                if not remote_planner_df.empty:
-                    editable_columns.extend(["hoja_origen", "celda_planificacion"])
-                edited_plan = st.data_editor(
-                    planner_table[editable_columns],
-                    key=f"daily_planner_editor_{focus_name}",
-                    width="stretch",
-                    hide_index=True,
-                    disabled=[column for column in editable_columns if column != "PLANIFICADO"],
-                    column_config={
-                        "PLANIFICADO": st.column_config.NumberColumn("PLANIFICADO", min_value=0.0, step=0.1, format="%.2f"),
-                        "OBJETIVO MES": st.column_config.NumberColumn("OBJETIVO MES", format="%.2f"),
-                        "ACUM. ANT.": st.column_config.NumberColumn("ACUM. ANT.", format="%.2f"),
-                        "DIAS HABILES MES": st.column_config.NumberColumn("DIAS HABILES MES", format="%.1f"),
-                        "DIAS RESTANTES": st.column_config.NumberColumn("DIAS RESTANTES", format="%.1f"),
-                        "hoja_origen": st.column_config.TextColumn("Hoja Sheet"),
-                        "celda_planificacion": st.column_config.TextColumn("Celda planif."),
-                    },
-                )
-                if st.button("Guardar planificado del dia", key=f"save_daily_plan_{focus_name}", width="stretch"):
-                    try:
-                        saved_path = save_daily_plan(selected_date, focus_name, edited_plan)
-                        st.success(f"Planificado guardado en {saved_path}")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"No pude guardar en Google Sheet: {exc}")
-
-                display_table = planner_table.drop(columns=["PLANIFICADO"]).merge(
-                    edited_plan[["promotor", "PLANIFICADO"]],
-                    on="promotor",
-                    how="left",
-                )
-                display_table["AVANCE"] = np.where(
-                    display_table["PLANIFICADO"].fillna(0) != 0,
-                    display_table["REAL"] / display_table["PLANIFICADO"] * 100,
-                    np.nan,
-                )
-                render_planner_table(PLANNER_FOCUS_RULES[focus_name]["title"], focus_name, display_table)
-                planner_pdf_tables.append(
-                    (
-                        PLANNER_FOCUS_RULES[focus_name]["title"],
-                        PLANNER_FOCUS_RULES[focus_name]["caption"],
-                        display_table.copy(),
-                    )
-                )
-
-        if planner_pdf_tables:
-            st.download_button(
-                "Generar PDF cierre del dia",
-                data=build_planner_pdf(planner_pdf_tables, selected_date),
-                file_name=f"cierre_planificador_{selected_date.strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
-                width="stretch",
-            )
 
     with tab_aa:
         if annual_info is None or annual_filtered is None or annual_filtered.empty:
