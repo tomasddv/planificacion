@@ -5,6 +5,7 @@ import io
 import os
 import re
 import shutil
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -101,24 +102,39 @@ def parse_number(value: object) -> float:
     return float(pd.to_numeric(text, errors="coerce"))
 
 
-def resolve_google_drive_folder(url: str, folder_name: str = "planificacion") -> Path | None:
+def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", force_refresh: bool = False) -> Path | None:
     if not url:
         return None
     target = PROJECT_ROOT / ".cloud_data" / folder_name
-    refresh = str(secret_or_env("FORCE_GDRIVE_REFRESH", "false")).lower() in {"1", "true", "si", "sí", "yes"}
+    refresh = force_refresh or str(secret_or_env("FORCE_GDRIVE_REFRESH", "false")).lower() in {"1", "true", "si", "sí", "yes"}
     if target.exists() and any(target.iterdir()) and not refresh:
         return target
     try:
         import gdown
     except ImportError:
         return target if target.exists() else None
-    if target.exists() and refresh:
-        shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    download_target = target
+    if refresh:
+        download_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp_{int(time.time())}"
+        if download_target.exists():
+            shutil.rmtree(download_target, ignore_errors=True)
+    download_target.mkdir(parents=True, exist_ok=True)
+
     try:
-        gdown.download_folder(url=url, output=str(target), quiet=True, use_cookies=False)
+        gdown.download_folder(url=url, output=str(download_target), quiet=True, use_cookies=False)
     except Exception:
-        return target if any(target.iterdir()) else None
+        return target if target.exists() and any(target.iterdir()) else None
+
+    if refresh and download_target.exists() and any(download_target.iterdir()):
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            download_target.rename(target)
+            return target
+        except Exception:
+            return download_target
     return target
 
 
@@ -182,8 +198,8 @@ def parse_objectives_file(path: Path) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def load_drive_objectives(drive_url: str) -> tuple[pd.DataFrame, str]:
-    folder = resolve_google_drive_folder(drive_url)
+def load_drive_objectives(drive_url: str, refresh_nonce: float = 0.0) -> tuple[pd.DataFrame, str]:
+    folder = resolve_google_drive_folder(drive_url, force_refresh=refresh_nonce > 0)
     path = latest_objectives_file(folder)
     if path is None:
         return pd.DataFrame(columns=["promotor", "foco", "objetivo_drive"]), ""
@@ -210,8 +226,8 @@ def apply_drive_objectives(planning: pd.DataFrame, objectives: pd.DataFrame) -> 
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def load_sales_from_drive(drive_url: str) -> tuple[pd.DataFrame, str]:
-    folder = resolve_google_drive_folder(drive_url)
+def load_sales_from_drive(drive_url: str, refresh_nonce: float = 0.0) -> tuple[pd.DataFrame, str]:
+    folder = resolve_google_drive_folder(drive_url, force_refresh=refresh_nonce > 0)
     if folder is None:
         return pd.DataFrame(), ""
     daily_file = sales_app.latest_daily_file_in_folder(folder)
@@ -973,17 +989,22 @@ def main() -> None:
 
     st.sidebar.title("Configuracion")
     st.sidebar.link_button("Ir al dash de ventas", big_dash_url, width="stretch")
-    if st.sidebar.button("Actualizar desde Sheet", width="stretch"):
+    if "drive_refresh_nonce" not in st.session_state:
+        st.session_state["drive_refresh_nonce"] = 0.0
+    if st.sidebar.button("Actualizar Drive y Sheet", width="stretch"):
+        st.session_state["drive_refresh_nonce"] = time.time()
         st.cache_data.clear()
-        st.rerun()
+        st.sidebar.success("Actualizando desde Drive y Sheet...")
     st.sidebar.caption("Sheet conectado")
     st.sidebar.code(sheet_url, language=None)
 
     try:
         planning = load_sheet(sheet_url)
         sheet_days = load_sheet_days(sheet_url)
-        drive_objectives, objective_label = load_drive_objectives(drive_url)
-        sales, sales_label = load_sales_from_drive(drive_url)
+        refresh_nonce = float(st.session_state.get("drive_refresh_nonce", 0.0))
+        drive_objectives, objective_label = load_drive_objectives(drive_url, refresh_nonce)
+        sales, sales_label = load_sales_from_drive(drive_url, refresh_nonce)
+        st.session_state["drive_refresh_nonce"] = 0.0
     except Exception as exc:
         st.error(f"No pude leer el Sheet de planificacion: {exc}")
         st.stop()
