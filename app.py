@@ -154,7 +154,6 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
     try:
         import gdown
     except ImportError:
-        st.sidebar.warning("Falta instalar gdown para leer datos desde Google Drive.")
         return None
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -165,12 +164,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
 
     try:
         gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False)
-    except Exception as exc:
-        st.sidebar.warning(
-            "No pude descargar la carpeta de Google Drive en este intento. "
-            "Uso cache/carpeta local si existe. "
-            f"Detalle: {exc}"
-        )
+    except Exception:
         return target if target.exists() and any(target.iterdir()) else None
 
     if tmp_target.exists() and any(tmp_target.iterdir()):
@@ -2513,19 +2507,6 @@ def main() -> None:
         except Exception as exc:
             st.sidebar.warning(f"No pude leer objetivos; uso objetivos de mayo de respaldo: {exc}")
 
-    planner_objectives_df = pd.DataFrame(columns=["promotor", "foco", "objetivo_mes"])
-    planner_objectives_info: SourceInfo | None = None
-    planner_objectives_file = latest_planner_objectives_file_in_folder(DEFAULT_DATA_DIR)
-    if planner_objectives_file is not None:
-        try:
-            planner_objectives_df, planner_objectives_info = load_planner_objectives(
-                str(planner_objectives_file),
-                planner_objectives_file.stat().st_mtime_ns,
-            )
-        except Exception as exc:
-            st.sidebar.warning(f"No pude leer objetivos por vendedor/segmento: {exc}")
-    saved_planner_df = load_saved_planner()
-
     annual_df: pd.DataFrame | None = None
     annual_info: SourceInfo | None = None
     annual_warning = "No se encontro archivo de venta anual para comparacion AA"
@@ -2555,12 +2536,6 @@ def main() -> None:
         st.sidebar.success(f"Objetivos: {objectives_info.label}")
     else:
         st.sidebar.info("Objetivos: respaldo mayo cargado hasta que agregues objetivos.xlsx")
-    planner_path = planner_store_path()
-    if planner_path.exists():
-        st.sidebar.success(f"Plan guardado: {planner_path.name}")
-        st.sidebar.caption(str(planner_path))
-    else:
-        st.sidebar.info("Plan guardado: CSV local. Para otra PC, usar descargar/restaurar.")
     if aux_info is not None:
         st.sidebar.success(f"Auxiliares: {aux_info.label}")
     if annual_info is not None:
@@ -2575,47 +2550,6 @@ def main() -> None:
     if filtered.empty:
         st.warning("No hay datos para los filtros seleccionados.")
         st.stop()
-
-    planner_sheet_source = planner_sheet_url()
-    remote_planner_df = pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor", "hoja_origen", "celda_planificacion", "celda_objetivo"])
-    if planner_sheet_source:
-        try:
-            remote_planner_df = load_remote_planning_sheet(planner_sheet_source, selected_date.strftime("%Y-%m-%d"))
-            if not remote_planner_df.empty:
-                current_day = pd.Timestamp(selected_date).normalize()
-                saved_planner_df = saved_planner_df[
-                    ~(
-                        (saved_planner_df["fecha"] == current_day)
-                        & saved_planner_df["foco"].isin(remote_planner_df["foco"].unique())
-                    )
-                ].copy()
-                remote_saved_columns = PLANNER_COLUMNS + [
-                    column
-                    for column in ["hoja_origen", "celda_planificacion", "celda_objetivo"]
-                    if column in remote_planner_df.columns
-                ]
-                saved_planner_df = pd.concat(
-                    [saved_planner_df, remote_planner_df[remote_saved_columns]],
-                    ignore_index=True,
-                )
-                remote_objectives = remote_planner_df.dropna(subset=["objetivo_mes"])[
-                    ["promotor", "foco", "objetivo_mes"]
-                ].copy()
-                if not remote_objectives.empty:
-                    planner_objectives_df = pd.concat(
-                        [planner_objectives_df, remote_objectives],
-                        ignore_index=True,
-                    ).drop_duplicates(["promotor", "foco"], keep="last")
-                st.sidebar.success("Planificado: Google Sheet externo")
-        except Exception as exc:
-            st.sidebar.warning(f"No pude leer el Sheet de planificacion; uso CSV/manual: {exc}")
-
-    if not remote_planner_df.empty:
-        st.sidebar.success("Objetivos vendedor: Sheet de planificacion")
-    elif planner_objectives_info is not None:
-        st.sidebar.success(f"Objetivos vendedor: {planner_objectives_info.label}")
-    else:
-        st.sidebar.info("Planificador: falta archivo de objetivos por vendedor/segmento")
 
     historical_filtered = combine_current_with_history(filtered, annual_filtered)
     daily = filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
