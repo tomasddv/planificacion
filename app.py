@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
 import unicodedata
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -684,7 +687,6 @@ def mesa_from_promoter(series: pd.Series) -> pd.Series:
     return names.map(PROMOTER_MESA_MAP).fillna("Sin mesa")
 
 
-@st.cache_data(show_spinner=False)
 def load_source_from_path(
     path_text: str,
     modified_ns: int,
@@ -700,7 +702,6 @@ def load_source_from_path(
     return normalize(raw), info
 
 
-@st.cache_data(show_spinner=False)
 def load_annual_source_from_path(
     path_text: str,
     modified_ns: int,
@@ -716,7 +717,6 @@ def load_annual_source_from_path(
     return normalize(raw), info
 
 
-@st.cache_data(show_spinner=False)
 def load_source_from_upload(
     name: str,
     content: bytes,
@@ -758,7 +758,6 @@ def classify_customer_channel(value: str | None) -> str:
     return "NO"
 
 
-@st.cache_data(show_spinner=False)
 def load_customer_channels(
     path_text: str,
     modified_ns: int,
@@ -866,7 +865,6 @@ def normalize_beer_segment(value: str | None) -> str:
     return "CVZA SIN SEGMENTO"
 
 
-@st.cache_data(show_spinner=False)
 def load_auxiliary_segments(
     path_text: str,
     modified_ns: int,
@@ -927,7 +925,6 @@ def apply_auxiliary_segments(df: pd.DataFrame, aux_segments: dict[str, pd.DataFr
     return result.drop(columns=[col for col in ["marca_key", "calibre_key", "segmento_cerveza", "segmento_ung"] if col in result.columns])
 
 
-@st.cache_data(show_spinner=False)
 def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
     if path.suffix.lower() in {".xlsx", ".xls"}:
@@ -1037,7 +1034,17 @@ def google_sheet_export_url(raw_url: str) -> str:
 
 
 def planner_sheet_url() -> str:
-    return secret_or_env("PLANNER_GOOGLE_SHEET_URL")
+    url = secret_or_env("PLANNER_GOOGLE_SHEET_URL")
+    return "" if url.upper().startswith("PEGAR_") else url
+
+
+def planner_webapp_url() -> str:
+    url = secret_or_env("PLANNER_WEBAPP_URL")
+    return "" if url.upper().startswith("PEGAR_") else url
+
+
+def spreadsheet_cell(row_index: int, col_index: int) -> str:
+    return f"{colLetra(col_index + 1)}{row_index + 1}"
 
 
 def parse_planning_sheet_workbook(workbook: dict[str, pd.DataFrame], selected_date: pd.Timestamp) -> pd.DataFrame:
@@ -1083,10 +1090,13 @@ def parse_planning_sheet_workbook(workbook: dict[str, pd.DataFrame], selected_da
                             "planificado": plan_value,
                             "objetivo_mes": objective_value,
                             "supervisor": str(sheet_name),
+                            "hoja_origen": str(sheet_name),
+                            "celda_planificacion": spreadsheet_cell(detail_idx, plan_col),
+                            "celda_objetivo": spreadsheet_cell(detail_idx, objective_col) if objective_col is not None else "",
                         }
                     )
     if not rows:
-        return pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor"])
+        return pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor", "hoja_origen", "celda_planificacion", "celda_objetivo"])
     result = pd.DataFrame(rows)
     result = result.drop_duplicates(["fecha", "foco", "promotor"], keep="last")
     return result
@@ -1101,7 +1111,6 @@ def load_remote_planning_sheet(raw_url: str, selected_date_text: str) -> pd.Data
     return parse_planning_sheet_workbook(workbook, pd.Timestamp(selected_date_text))
 
 
-@st.cache_data(show_spinner=False)
 def load_planner_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
     if path.suffix.lower() in {".xlsx", ".xls"}:
@@ -1537,6 +1546,41 @@ def load_saved_planner() -> pd.DataFrame:
     return local_planner_load()
 
 
+def save_plan_to_google_sheet(selected_date: pd.Timestamp, focus_name: str, plan_df: pd.DataFrame) -> str | None:
+    url = planner_webapp_url()
+    if not url:
+        return None
+    rows = []
+    for _, row in plan_df.iterrows():
+        planificado = pd.to_numeric(row.get("PLANIFICADO"), errors="coerce")
+        if pd.isna(planificado):
+            planificado = ""
+        rows.append(
+            {
+                "fecha": pd.Timestamp(selected_date).strftime("%Y-%m-%d"),
+                "foco": focus_name,
+                "promotor": normalize_vendor_name(row.get("promotor")),
+                "planificado": "" if planificado == "" else float(planificado),
+            }
+        )
+    payload = {"fecha": pd.Timestamp(selected_date).strftime("%Y-%m-%d"), "foco": focus_name, "rows": rows}
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No pude escribir en el Sheet: {exc}") from exc
+    if '"ok":true' not in body.replace(" ", "").lower():
+        raise RuntimeError(f"El Sheet no confirmo guardado: {body[:300]}")
+    return "Google Sheet"
+
+
 def save_daily_plan(selected_date: pd.Timestamp, focus_name: str, plan_df: pd.DataFrame) -> str:
     saved = load_saved_planner()
     new_rows = plan_df[["promotor", "PLANIFICADO"]].copy()
@@ -1549,7 +1593,9 @@ def save_daily_plan(selected_date: pd.Timestamp, focus_name: str, plan_df: pd.Da
         same_key = (saved["fecha"] == pd.Timestamp(selected_date).normalize()) & (saved["foco"] == focus_name)
         saved = saved.loc[~same_key].copy()
     output = pd.concat([saved, new_rows], ignore_index=True)
-    return local_planner_save(output)
+    local_path = local_planner_save(output)
+    sheet_result = save_plan_to_google_sheet(selected_date, focus_name, plan_df)
+    return f"{sheet_result} y respaldo local {local_path}" if sheet_result else local_path
 
 
 def replace_saved_planner(saved: pd.DataFrame) -> str:
@@ -1625,9 +1671,16 @@ def build_daily_planner_table(
         plan["promotor_key"] = plan["promotor"].map(normalize_vendor_name)
         if "promotor_key" not in table.columns:
             table["promotor_key"] = table["promotor"].map(normalize_vendor_name)
-        table = table.merge(plan.drop_duplicates("promotor_key", keep="last")[["promotor_key", "planificado"]], on="promotor_key", how="left")
+        plan_columns = ["promotor_key", "planificado"]
+        for optional_column in ["hoja_origen", "celda_planificacion", "celda_objetivo"]:
+            if optional_column in plan.columns:
+                plan_columns.append(optional_column)
+        table = table.merge(plan.drop_duplicates("promotor_key", keep="last")[plan_columns], on="promotor_key", how="left")
     else:
         table["planificado"] = np.nan
+    for optional_column in ["hoja_origen", "celda_planificacion", "celda_objetivo"]:
+        if optional_column not in table.columns:
+            table[optional_column] = ""
 
     remaining_days = selling_days_remaining_from(selected_date)
     table["OBJETIVO MES"] = table["objetivo_mes"]
@@ -1651,6 +1704,8 @@ def build_daily_planner_table(
         "DIAS HABILES MES",
         "DIAS RESTANTES",
         "PLANIFICADO",
+        "hoja_origen",
+        "celda_planificacion",
         "REAL",
         "AVANCE",
         "MEDIA NEC.",
@@ -2499,7 +2554,7 @@ def main() -> None:
         st.stop()
 
     planner_sheet_source = planner_sheet_url()
-    remote_planner_df = pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor"])
+    remote_planner_df = pd.DataFrame(columns=PLANNER_COLUMNS + ["objetivo_mes", "supervisor", "hoja_origen", "celda_planificacion", "celda_objetivo"])
     if planner_sheet_source:
         try:
             remote_planner_df = load_remote_planning_sheet(planner_sheet_source, selected_date.strftime("%Y-%m-%d"))
@@ -2511,8 +2566,13 @@ def main() -> None:
                         & saved_planner_df["foco"].isin(remote_planner_df["foco"].unique())
                     )
                 ].copy()
+                remote_saved_columns = PLANNER_COLUMNS + [
+                    column
+                    for column in ["hoja_origen", "celda_planificacion", "celda_objetivo"]
+                    if column in remote_planner_df.columns
+                ]
                 saved_planner_df = pd.concat(
-                    [saved_planner_df, remote_planner_df[PLANNER_COLUMNS]],
+                    [saved_planner_df, remote_planner_df[remote_saved_columns]],
                     ignore_index=True,
                 )
                 remote_objectives = remote_planner_df.dropna(subset=["objetivo_mes"])[
@@ -2767,6 +2827,13 @@ def main() -> None:
             "Carga el PLANIFICADO a la manana y guardalo. "
             "Cuando actualices venta diaria, el REAL se cruza contra esa planificacion guardada."
         )
+        if planner_sheet_url() and not planner_webapp_url():
+            st.warning(
+                "El dash ya tiene Sheet para lectura, pero falta PLANNER_WEBAPP_URL. "
+                "Hasta pegar esa URL, Guardar planificado del dia queda solo como respaldo local."
+            )
+        elif planner_webapp_url():
+            st.success("Guardado conectado: al presionar Guardar planificado del dia se actualiza el Google Sheet.")
         backup_cols = st.columns(2)
         planner_path = planner_store_path()
         with backup_cols[0]:
@@ -2811,6 +2878,8 @@ def main() -> None:
                     "DIAS RESTANTES",
                     "PLANIFICADO",
                 ]
+                if not remote_planner_df.empty:
+                    editable_columns.extend(["hoja_origen", "celda_planificacion"])
                 edited_plan = st.data_editor(
                     planner_table[editable_columns],
                     key=f"daily_planner_editor_{focus_name}",
@@ -2823,6 +2892,8 @@ def main() -> None:
                         "ACUM. ANT.": st.column_config.NumberColumn("ACUM. ANT.", format="%.2f"),
                         "DIAS HABILES MES": st.column_config.NumberColumn("DIAS HABILES MES", format="%.1f"),
                         "DIAS RESTANTES": st.column_config.NumberColumn("DIAS RESTANTES", format="%.1f"),
+                        "hoja_origen": st.column_config.TextColumn("Hoja Sheet"),
+                        "celda_planificacion": st.column_config.TextColumn("Celda planif."),
                     },
                 )
                 if st.button("Guardar planificado del dia", key=f"save_daily_plan_{focus_name}", width="stretch"):
