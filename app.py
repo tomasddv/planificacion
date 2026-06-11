@@ -7,6 +7,7 @@ import re
 import shutil
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,6 +122,9 @@ PROMOTER_MESA_MAP = {
     "JUAN MANUEL GIMENEZ": "casco hernan",
     "MENDEZ CARLOS": "casco hernan",
     "MARIANO HERRERA": "casco hernan",
+}
+VENDOR_NAME_ALIASES = {
+    "ENZO VILLAGRA": "VILLAGRA ENZO",
 }
 
 
@@ -966,7 +970,8 @@ def normalize_vendor_name(value: object) -> str:
     text = str(value or "").strip()
     if "-" in text:
         text = text.split("-", 1)[1]
-    return re.sub(r"\s+", " ", text).strip().upper()
+    normalized = re.sub(r"\s+", " ", text).strip().upper()
+    return VENDOR_NAME_ALIASES.get(normalized, normalized)
 
 
 def normalize_planner_focus(value: object) -> str:
@@ -1564,11 +1569,11 @@ def save_plan_to_google_sheet(selected_date: pd.Timestamp, focus_name: str, plan
             }
         )
     payload = {"fecha": pd.Timestamp(selected_date).strftime("%Y-%m-%d"), "foco": focus_name, "rows": rows}
-    data = json.dumps(payload).encode("utf-8")
+    data = urllib.parse.urlencode({"payload": json.dumps(payload)}).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     try:
