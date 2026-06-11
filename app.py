@@ -161,13 +161,14 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
     tmp_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp"
     if tmp_target.exists():
         shutil.rmtree(tmp_target)
+    tmp_target.mkdir(parents=True, exist_ok=True)
 
     try:
         gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False)
     except Exception as exc:
         st.sidebar.warning(
             "No pude descargar la carpeta de Google Drive en este intento. "
-            "Uso cache/carpeta local si existe. El planificado diario no se borra por este error. "
+            "Uso cache/carpeta local si existe. "
             f"Detalle: {exc}"
         )
         return target if target.exists() and any(target.iterdir()) else None

@@ -17,6 +17,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle
 
+import app as sales_app
+
 
 APP_TITLE = "Planificador de promotores"
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
@@ -39,6 +41,12 @@ FOCUS_ALIASES = {
 }
 
 FOCUS_ORDER = ["TOTAL CERVEZAS", "VOLUMEN ABOVE CORE", "TOTAL UNG", "AGUAS"]
+SALES_FOCUS_MAP = {
+    "TOTAL CERVEZAS": "Foco 1 - Total Cervezas 2026",
+    "VOLUMEN ABOVE CORE": "Foco 2 - Above core 2026",
+    "TOTAL UNG": "Foco 3 - Total UNG 2026",
+    "AGUAS": "Foco 4 - Total Aguas 2026",
+}
 FOCUS_COLORS = {
     "TOTAL CERVEZAS": "#0b63ce",
     "VOLUMEN ABOVE CORE": "#7a5af8",
@@ -201,6 +209,107 @@ def apply_drive_objectives(planning: pd.DataFrame, objectives: pd.DataFrame) -> 
     return result.drop(columns=["promotor_key", "foco_key", "objetivo_drive"])
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def load_sales_from_drive(drive_url: str) -> tuple[pd.DataFrame, str]:
+    folder = resolve_google_drive_folder(drive_url)
+    if folder is None:
+        return pd.DataFrame(), ""
+    daily_file = sales_app.latest_daily_file_in_folder(folder)
+    if daily_file is None:
+        return pd.DataFrame(), ""
+    df, _ = sales_app.load_source_from_path(str(daily_file), daily_file.stat().st_mtime_ns)
+
+    customer_file = sales_app.latest_customer_file_in_folder(folder)
+    if customer_file is not None:
+        try:
+            customer_channels, _ = sales_app.load_customer_channels(str(customer_file), customer_file.stat().st_mtime_ns)
+            df = sales_app.apply_customer_channels(df, customer_channels)
+        except Exception:
+            pass
+
+    aux_file = sales_app.latest_auxiliary_file_in_folder(folder)
+    if aux_file is not None:
+        try:
+            aux_segments, _ = sales_app.load_auxiliary_segments(str(aux_file), aux_file.stat().st_mtime_ns)
+            df = sales_app.apply_auxiliary_segments(df, aux_segments)
+        except Exception:
+            df = sales_app.apply_auxiliary_segments(df, None)
+    else:
+        df = sales_app.apply_auxiliary_segments(df, None)
+
+    return sales_app.ensure_analysis_columns(df), daily_file.name
+
+
+def focus_sales(sales: pd.DataFrame, focus: str) -> pd.DataFrame:
+    focus_name = SALES_FOCUS_MAP[focus]
+    result = sales.copy()
+    for column, allowed in sales_app.PLANNER_FOCUS_RULES[focus_name].items():
+        if column in {"title", "caption"}:
+            continue
+        if column in result.columns:
+            result = result[result[column].astype(str).isin(allowed)]
+    return result
+
+
+def sales_metrics(sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) -> pd.DataFrame:
+    if sales.empty:
+        return pd.DataFrame(columns=["promotor", "real", "media_real", "acum_ant"])
+    selected_date = pd.Timestamp(selected_date).normalize()
+    df = focus_sales(sales, focus)
+    real = (
+        df[df["fecha"].eq(selected_date)]
+        .groupby("promotor", as_index=False)["hl"]
+        .sum()
+        .rename(columns={"hl": "real"})
+    )
+    month_start = selected_date.replace(day=1)
+    accum = (
+        df[(df["fecha"] >= month_start) & (df["fecha"] < selected_date)]
+        .groupby("promotor", as_index=False)["hl"]
+        .sum()
+        .rename(columns={"hl": "acum_ant"})
+    )
+    media = (
+        df[df["fecha"] < selected_date]
+        .groupby(["promotor", "fecha"], as_index=False)["hl"]
+        .sum()
+        .sort_values("fecha")
+        .groupby("promotor", as_index=False)
+        .tail(28)
+        .groupby("promotor", as_index=False)["hl"]
+        .mean()
+        .rename(columns={"hl": "media_real"})
+    )
+    vendors = df[["promotor"]].drop_duplicates()
+    result = vendors.merge(real, on="promotor", how="left").merge(accum, on="promotor", how="left").merge(media, on="promotor", how="left")
+    result["promotor"] = result["promotor"].map(normalize_promoter)
+    return result.fillna({"real": 0.0, "acum_ant": 0.0})
+
+
+def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) -> pd.DataFrame:
+    work = edited.copy()
+    work["promotor_key"] = work["promotor"].map(normalize_promoter)
+    work["objetivo"] = pd.to_numeric(work["objetivo"], errors="coerce").fillna(0.0)
+    work["planificado"] = pd.to_numeric(work["planificado"], errors="coerce").fillna(0.0)
+
+    metrics = sales_metrics(sales, focus, selected_date)
+    metrics["promotor_key"] = metrics["promotor"].map(normalize_promoter)
+    work = work.merge(metrics[["promotor_key", "real", "media_real", "acum_ant"]], on="promotor_key", how="left")
+    work[["real", "acum_ant"]] = work[["real", "acum_ant"]].fillna(0.0)
+
+    day_lookup = days[["supervisor", "restan"]].drop_duplicates("supervisor") if not days.empty else pd.DataFrame(columns=["supervisor", "restan"])
+    work = work.merge(day_lookup, on="supervisor", how="left")
+    work["media_necesaria"] = np.where(
+        work["restan"].fillna(0) > 0,
+        (work["objetivo"] - work["acum_ant"]).clip(lower=0) / work["restan"],
+        np.nan,
+    )
+    work["avance"] = np.where(work["planificado"] > 0, work["real"] / work["planificado"] * 100, np.nan)
+    work["vs_media_necesaria"] = np.where(work["media_necesaria"] > 0, work["real"] / work["media_necesaria"] * 100, np.nan)
+    work["vs_media_real"] = np.where(work["media_real"] > 0, work["real"] / work["media_real"] * 100, np.nan)
+    return work
+
+
 def google_sheet_export_url(raw_url: str) -> str:
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", raw_url)
     if match:
@@ -334,6 +443,26 @@ def build_summary(edited: pd.DataFrame, days: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([summary, pd.DataFrame([total])], ignore_index=True)
 
 
+def complete_days(days: pd.DataFrame, planning: pd.DataFrame, selected_date: pd.Timestamp) -> pd.DataFrame:
+    selected_date = pd.Timestamp(selected_date).normalize()
+    supervisors = planning[["supervisor"]].drop_duplicates()
+    result = supervisors.merge(days, on="supervisor", how="left") if not days.empty else supervisors.copy()
+    month_start = selected_date.replace(day=1)
+    auto_laborales = sales_app.selling_days_in_month(selected_date)
+    auto_trabajados = sales_app.weighted_selling_days(month_start, selected_date - pd.Timedelta(days=1))
+    auto_restan = sales_app.selling_days_remaining_from(selected_date)
+    for column, value in {
+        "dias_laborales": auto_laborales,
+        "dias_trabajados": auto_trabajados,
+        "restan": auto_restan,
+    }.items():
+        if column not in result.columns:
+            result[column] = value
+        else:
+            result[column] = pd.to_numeric(result[column], errors="coerce").fillna(value)
+    return result
+
+
 def format_number(value: object) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -365,7 +494,125 @@ def render_summary(summary: pd.DataFrame) -> None:
     st.dataframe(display, hide_index=True, width="stretch")
 
 
-def planner_pdf_bytes(focus: str, selected_date: pd.Timestamp, edited: pd.DataFrame, summary: pd.DataFrame) -> bytes:
+def pct_class(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return "good" if float(value) >= 100 else "bad"
+
+
+def render_progress_table(focus: str, progress: pd.DataFrame) -> None:
+    headers = ["", "PLANIFICADO", "REAL", "AVANCE", "MEDIA NEC.", "MEDIA REAL", "VS MEDIA NEC.", "VS MEDIA REAL"]
+    percent_cols = {"AVANCE", "VS MEDIA NEC.", "VS MEDIA REAL"}
+    total = {
+        "PLANIFICADO": progress["planificado"].sum(min_count=1),
+        "REAL": progress["real"].sum(min_count=1),
+        "MEDIA NEC.": progress["media_necesaria"].sum(min_count=1),
+        "MEDIA REAL": progress["media_real"].sum(min_count=1),
+    }
+    total["AVANCE"] = total["REAL"] / total["PLANIFICADO"] * 100 if total["PLANIFICADO"] else np.nan
+    total["VS MEDIA NEC."] = total["REAL"] / total["MEDIA NEC."] * 100 if total["MEDIA NEC."] else np.nan
+    total["VS MEDIA REAL"] = total["REAL"] / total["MEDIA REAL"] * 100 if total["MEDIA REAL"] else np.nan
+
+    rows = []
+    total_cells = ["<td>TOTAL</td>"]
+    for column in headers[1:]:
+        cls = pct_class(total[column]) if column in percent_cols else ""
+        value = f"{total[column]:.0f}%" if column in percent_cols and not pd.isna(total[column]) else format_number(total[column])
+        total_cells.append(f"<td class='{cls}'>{value}</td>")
+    rows.append(f"<tr class='total-row'>{''.join(total_cells)}</tr>")
+
+    for supervisor, group in progress.groupby("supervisor", dropna=False):
+        supervisor_total = group["planificado"].sum()
+        supervisor_real = group["real"].sum()
+        supervisor_avance = supervisor_real / supervisor_total * 100 if supervisor_total else np.nan
+        rows.append(
+            f"<tr class='mesa-row'><td>{supervisor}</td><td>{format_number(supervisor_total)}</td>"
+            f"<td>{format_number(supervisor_real)}</td><td class='{pct_class(supervisor_avance)}'>"
+            f"{'-' if pd.isna(supervisor_avance) else f'{supervisor_avance:.0f}%'}</td>"
+            f"<td colspan='4'></td></tr>"
+        )
+        for _, row in group.sort_values("promotor").iterrows():
+            values = [
+                row["promotor"],
+                format_number(row["planificado"]),
+                format_number(row["real"]),
+                "-" if pd.isna(row["avance"]) else f"{row['avance']:.0f}%",
+                format_number(row["media_necesaria"]),
+                format_number(row["media_real"]),
+                "-" if pd.isna(row["vs_media_necesaria"]) else f"{row['vs_media_necesaria']:.0f}%",
+                "-" if pd.isna(row["vs_media_real"]) else f"{row['vs_media_real']:.0f}%",
+            ]
+            cells = []
+            for idx, value in enumerate(values):
+                column = headers[idx]
+                cls = pct_class(row[{
+                    "AVANCE": "avance",
+                    "VS MEDIA NEC.": "vs_media_necesaria",
+                    "VS MEDIA REAL": "vs_media_real",
+                }[column]]) if column in percent_cols else ""
+                cells.append(f"<td class='{cls}'>{value}</td>")
+            rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    header_cells = "".join(f"<th>{header}</th>" for header in headers)
+    color = FOCUS_COLORS.get(focus, "#0b63ce")
+    st.markdown(
+        f"""
+        <style>
+        table.progress-table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            color: #0f172a;
+            font-size: 14px;
+            box-shadow: 0 14px 34px rgba(15,23,42,.12);
+        }}
+        table.progress-table th {{
+            background: #0b78bd;
+            color: white;
+            border: 1px solid #111827;
+            padding: 6px;
+            text-align: center;
+        }}
+        table.progress-table td {{
+            border: 1px solid #111827;
+            padding: 5px 7px;
+            text-align: right;
+            font-weight: 700;
+        }}
+        table.progress-table td:first-child {{ text-align: left; }}
+        table.progress-table .total-row td {{
+            background: #d9e2f3;
+            color: #111827;
+            font-weight: 800;
+        }}
+        table.progress-table .mesa-row td {{
+            background: #305caa;
+            color: white;
+            font-weight: 800;
+            text-align: center;
+        }}
+        table.progress-table .good {{ background: #c6efce !important; color: #006100 !important; }}
+        table.progress-table .bad {{ background: #ffc7ce !important; color: #9c0006 !important; }}
+        .progress-title {{
+            background: {color};
+            color: white;
+            padding: 7px;
+            text-align: center;
+            font-weight: 800;
+            border: 1px solid #111827;
+        }}
+        </style>
+        <div class="progress-title">{focus}</div>
+        <table class="progress-table">
+            <thead><tr>{header_cells}</tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def planner_pdf_bytes(focus: str, selected_date: pd.Timestamp, edited: pd.DataFrame, summary: pd.DataFrame, progress: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -420,6 +667,36 @@ def planner_pdf_bytes(focus: str, selected_date: pd.Timestamp, edited: pd.DataFr
         )
     )
     elements.extend([summary_table, Spacer(1, 12)])
+
+    progress_rows = [["Supervisor", "Promotor", "Planif.", "Real", "Avance", "Media nec.", "Media real", "Vs media", "Vs media real"]]
+    for _, row in progress.sort_values(["supervisor", "promotor"]).iterrows():
+        progress_rows.append(
+            [
+                row["supervisor"],
+                row["promotor"],
+                format_number(row["planificado"]),
+                format_number(row["real"]),
+                "-" if pd.isna(row["avance"]) else f"{row['avance']:.0f}%",
+                format_number(row["media_necesaria"]),
+                format_number(row["media_real"]),
+                "-" if pd.isna(row["vs_media_necesaria"]) else f"{row['vs_media_necesaria']:.0f}%",
+                "-" if pd.isna(row["vs_media_real"]) else f"{row['vs_media_real']:.0f}%",
+            ]
+        )
+    progress_table = Table(progress_rows, colWidths=[95, 140, 58, 58, 58, 70, 70, 65, 75], repeatRows=1)
+    progress_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0b78bd")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.black),
+                ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
+    elements.extend([progress_table, Spacer(1, 12)])
 
     detail_rows = [["Supervisor", "Promotor", "Objetivo", "Planificado", "Celda"]]
     detail = edited.copy()
@@ -551,6 +828,7 @@ def main() -> None:
         planning = load_sheet(sheet_url)
         sheet_days = load_sheet_days(sheet_url)
         drive_objectives, objective_label = load_drive_objectives(drive_url)
+        sales, sales_label = load_sales_from_drive(drive_url)
     except Exception as exc:
         st.error(f"No pude leer el Sheet de planificacion: {exc}")
         st.stop()
@@ -564,12 +842,17 @@ def main() -> None:
         st.sidebar.success(f"Objetivos: {objective_label}")
     else:
         st.sidebar.warning("No encontre objetivos por promotor en Drive.")
+    if not sales.empty:
+        st.sidebar.success(f"Venta diaria: {sales_label}")
+    else:
+        st.sidebar.warning("No encontre venta diaria para calcular REAL y MEDIA REAL.")
 
     supervisor_options = ["Todos"] + sorted(planning["supervisor"].dropna().astype(str).unique().tolist())
     supervisor = st.sidebar.selectbox("Supervisor", supervisor_options)
     if supervisor != "Todos":
         planning = planning[planning["supervisor"].eq(supervisor)].copy()
         sheet_days = sheet_days[sheet_days["supervisor"].eq(supervisor)].copy()
+    sheet_days = complete_days(sheet_days, planning, selected_date)
 
     tabs = st.tabs(FOCUS_ORDER)
     for tab, focus in zip(tabs, FOCUS_ORDER):
@@ -610,9 +893,13 @@ def main() -> None:
 
             st.markdown("#### Medias y avances")
             render_summary(summary)
+
+            progress = build_focus_progress(edited, sheet_days, sales, focus, selected_date)
+            st.markdown("#### Avance del dia")
+            render_progress_table(focus, progress)
             st.download_button(
                 "Exportar PDF del foco",
-                data=planner_pdf_bytes(focus, selected_date, edited, summary),
+                data=planner_pdf_bytes(focus, selected_date, edited, summary, progress),
                 file_name=f"planificacion_{focus.lower().replace(' ', '_')}_{selected_date.strftime('%Y%m%d')}.pdf",
                 mime="application/pdf",
                 width="stretch",
