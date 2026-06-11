@@ -264,6 +264,12 @@ def sales_metrics(sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) 
     )
     month_start = selected_date.replace(day=1)
     accum = (
+        df[(df["fecha"] >= month_start) & (df["fecha"] <= selected_date)]
+        .groupby("promotor", as_index=False)["hl"]
+        .sum()
+        .rename(columns={"hl": "acum_actual"})
+    )
+    accum_ant = (
         df[(df["fecha"] >= month_start) & (df["fecha"] < selected_date)]
         .groupby("promotor", as_index=False)["hl"]
         .sum()
@@ -281,9 +287,14 @@ def sales_metrics(sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) 
         .rename(columns={"hl": "media_real"})
     )
     vendors = df[["promotor"]].drop_duplicates()
-    result = vendors.merge(real, on="promotor", how="left").merge(accum, on="promotor", how="left").merge(media, on="promotor", how="left")
+    result = (
+        vendors.merge(real, on="promotor", how="left")
+        .merge(accum, on="promotor", how="left")
+        .merge(accum_ant, on="promotor", how="left")
+        .merge(media, on="promotor", how="left")
+    )
     result["promotor"] = result["promotor"].map(normalize_promoter)
-    return result.fillna({"real": 0.0, "acum_ant": 0.0})
+    return result.fillna({"real": 0.0, "acum_actual": 0.0, "acum_ant": 0.0})
 
 
 def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) -> pd.DataFrame:
@@ -294,8 +305,8 @@ def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.Dat
 
     metrics = sales_metrics(sales, focus, selected_date)
     metrics["promotor_key"] = metrics["promotor"].map(normalize_promoter)
-    work = work.merge(metrics[["promotor_key", "real", "media_real", "acum_ant"]], on="promotor_key", how="left")
-    work[["real", "acum_ant"]] = work[["real", "acum_ant"]].fillna(0.0)
+    work = work.merge(metrics[["promotor_key", "real", "media_real", "acum_actual", "acum_ant"]], on="promotor_key", how="left")
+    work[["real", "acum_actual", "acum_ant"]] = work[["real", "acum_actual", "acum_ant"]].fillna(0.0)
 
     day_lookup = days[["supervisor", "restan"]].drop_duplicates("supervisor") if not days.empty else pd.DataFrame(columns=["supervisor", "restan"])
     work = work.merge(day_lookup, on="supervisor", how="left")
@@ -305,6 +316,7 @@ def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.Dat
         np.nan,
     )
     work["avance"] = np.where(work["planificado"] > 0, work["real"] / work["planificado"] * 100, np.nan)
+    work["avance_objetivo"] = np.where(work["objetivo"] > 0, work["acum_actual"] / work["objetivo"] * 100, np.nan)
     work["vs_media_necesaria"] = np.where(work["media_necesaria"] > 0, work["real"] / work["media_necesaria"] * 100, np.nan)
     work["vs_media_real"] = np.where(work["media_real"] > 0, work["real"] / work["media_real"] * 100, np.nan)
     return work
@@ -525,7 +537,7 @@ def render_summary(summary: pd.DataFrame) -> None:
             "dias_laborales": "Dias laborales",
             "dias_trabajados": "Dias trabajados",
             "restan": "Restan",
-            "avance": "Avance",
+            "avance": "Plan / obj.",
             "media_necesaria": "Media nec.",
             "vs_media_necesaria": "Vs media nec.",
         }
@@ -961,7 +973,6 @@ def main() -> None:
 
     st.sidebar.title("Configuracion")
     st.sidebar.link_button("Ir al dash de ventas", big_dash_url, width="stretch")
-    selected_date = pd.Timestamp(st.sidebar.date_input("Fecha de planificacion", value=pd.Timestamp.today().date()))
     if st.sidebar.button("Actualizar desde Sheet", width="stretch"):
         st.cache_data.clear()
         st.rerun()
@@ -990,6 +1001,18 @@ def main() -> None:
         st.sidebar.success(f"Venta diaria: {sales_label}")
     else:
         st.sidebar.warning("No encontre venta diaria para calcular REAL y MEDIA REAL.")
+
+    if not sales.empty:
+        latest_invoice_date = pd.Timestamp(sales["fecha"].dropna().max()).normalize()
+        default_date = sales_app.next_selling_day(latest_invoice_date)
+        st.sidebar.caption(f"Ultima facturacion: {latest_invoice_date.strftime('%d/%m/%Y')}")
+    else:
+        default_date = pd.Timestamp.today().normalize()
+    selected_date = pd.Timestamp(
+        st.sidebar.date_input("Fecha de planificacion", value=pd.Timestamp(default_date).date())
+    ).normalize()
+    if not sales.empty and selected_date not in set(sales["fecha"].dropna().dt.normalize()):
+        st.sidebar.warning("La fecha seleccionada no existe en venta diaria. REAL se muestra en 0.")
 
     supervisor_options = ["Todos"] + sorted(planning["supervisor"].dropna().astype(str).unique().tolist())
     supervisor = st.sidebar.selectbox("Supervisor", supervisor_options)
@@ -1028,18 +1051,20 @@ def main() -> None:
             total_plan = float(pd.to_numeric(edited["planificado"], errors="coerce").fillna(0).sum())
             total_obj = float(pd.to_numeric(edited["objetivo"], errors="coerce").fillna(0).sum())
             summary = build_summary(edited, sheet_days)
-            total_row = summary[summary["supervisor"].eq("TOTAL")].iloc[0]
+            progress = build_focus_progress(edited, sheet_days, sales, focus, selected_date)
+            total_acum = float(pd.to_numeric(progress["acum_actual"], errors="coerce").fillna(0).sum())
+            avance_objetivo = (total_acum / total_obj * 100) if total_obj else np.nan
+            media_necesaria_total = float(pd.to_numeric(progress["media_necesaria"], errors="coerce").fillna(0).sum())
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Promotores", len(edited))
             c2.metric("Objetivo", f"{total_obj:,.1f}".replace(",", "X").replace(".", ",").replace("X", "."))
             c3.metric("Planificado", f"{total_plan:,.1f}".replace(",", "X").replace(".", ",").replace("X", "."))
-            c4.metric("Avance", "-" if pd.isna(total_row["avance"]) else f"{total_row['avance']:.0f}%".replace(".", ","))
-            c5.metric("Media nec.", format_number(total_row["media_necesaria"]))
+            c4.metric("Avance", "-" if pd.isna(avance_objetivo) else f"{avance_objetivo:.0f}%".replace(".", ","))
+            c5.metric("Media nec.", format_number(media_necesaria_total))
 
             st.markdown("#### Medias y avances")
             render_summary(summary)
 
-            progress = build_focus_progress(edited, sheet_days, sales, focus, selected_date)
             focus_payloads.append({"focus": focus, "edited": edited.copy(), "summary": summary.copy(), "progress": progress.copy()})
             st.markdown("#### Avance del dia")
             render_progress_table(focus, progress)
