@@ -35,6 +35,7 @@ DATA_DIR_CANDIDATES = [
 ]
 VALID_EXTENSIONS = {".txt", ".csv"}
 CLIENT_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
+PLANNER_STORE_FILE_NAME = "planificador_diario_guardado.csv"
 WINDOWS = (7, 14, 21, 28)
 EXACT_MONTH_LOOKBACKS = (1, 2, 3)
 NORMALIZATION_VERSION = 4
@@ -56,6 +57,39 @@ DIVISION_REPORT_ORDER = [
     "ADYACENCIAS",
 ]
 REPORT_TOTAL_UNITS = {"CZA", "UNG", "AGUAS ECO", "VINO", "ADYACENCIAS"}
+PLANNER_FOCUS_RULES = {
+    "Foco 1 - Total Cervezas 2026": {
+        "title": "TOTAL CZA",
+        "caption": "CERVEZAS, GIFTPACK CERVEZAS, POP",
+        "unidad_negocio": {"CZA"},
+    },
+    "Foco 2 - Above core 2026": {
+        "title": "ABOVE CORE",
+        "caption": "CERVEZAS, GIFTPACK CERVEZAS, SIDRAS, POP",
+        "division_informe": {"CVZA HE", "CVZA CORE +"},
+    },
+    "Foco 3 - Total UNG 2026": {
+        "title": "TOTAL UNG",
+        "caption": "UNG",
+        "unidad_negocio": {"UNG"},
+    },
+    "Foco 4 - Total Aguas 2026": {
+        "title": "TOTAL AGUAS",
+        "caption": "GASEOSAS, AGUAS, POP AGUAS",
+        "division_informe": {"AGUAS ECO"},
+    },
+}
+PLANNER_OBJECTIVE_ALIASES = {
+    "TOTAL CZA": "Foco 1 - Total Cervezas 2026",
+    "TOTAL CVZA": "Foco 1 - Total Cervezas 2026",
+    "TOTAL CERVEZAS": "Foco 1 - Total Cervezas 2026",
+    "ABOVE CORE": "Foco 2 - Above core 2026",
+    "TOTAL UNG": "Foco 3 - Total UNG 2026",
+    "UNG": "Foco 3 - Total UNG 2026",
+    "AGUAS": "Foco 4 - Total Aguas 2026",
+    "TOTAL AGUAS": "Foco 4 - Total Aguas 2026",
+    "AGUAS ECO": "Foco 4 - Total Aguas 2026",
+}
 DEFAULT_OBJECTIVES_ROWS = [
     {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": 3633.51},
     {"seccion": "", "item": "TOTAL UNG", "OBJ VTAS": 2923.65},
@@ -409,6 +443,56 @@ def page_setup() -> None:
             background: #214986;
             color: #ffffff !important;
         }
+        .planner-note {
+            background: #e0f2fe;
+            padding: 8px 12px;
+            border-radius: 6px;
+            color: #0f172a !important;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        table.planner-table {
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 840px;
+            font-size: 14px;
+        }
+        table.planner-table th {
+            background: #0070c0;
+            color: #ffffff !important;
+            border: 1px solid #111827;
+            padding: 5px 7px;
+            text-align: center;
+            font-weight: 900;
+        }
+        table.planner-table th.yellow {
+            background: #ffd966;
+            color: #111827 !important;
+        }
+        table.planner-table td {
+            border: 1px solid #111827;
+            padding: 4px 7px;
+            text-align: right;
+            color: #111827 !important;
+            background: #ffffff;
+            font-weight: 700;
+        }
+        table.planner-table td:first-child {
+            background: #d9e2f3;
+            color: #111827 !important;
+            text-align: left;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        table.planner-table tr.total-row td:first-child,
+        table.planner-table tr.mesa-row td {
+            background: #2f5ea8;
+            color: #ffffff !important;
+            text-align: center;
+            font-weight: 900;
+        }
+        table.planner-table td.good { background: #c6efce; color: #006100 !important; }
+        table.planner-table td.bad { background: #ffc7ce; color: #9c0006 !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -494,6 +578,21 @@ def latest_objectives_file_in_folder(folder: Path) -> Path | None:
         and not path.name.startswith("~$")
         and path.suffix.lower() in CLIENT_EXTENSIONS
         and "objet" in clean_name(path.stem)
+    ]
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def latest_planner_objectives_file_in_folder(folder: Path) -> Path | None:
+    if not folder.exists():
+        return None
+    terms = ("objet", "planificador", "focos")
+    files = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and path.suffix.lower() in CLIENT_EXTENSIONS
+        and any(term in clean_name(path.stem) for term in terms)
     ]
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
@@ -858,6 +957,111 @@ def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, Sou
     return result, info
 
 
+def normalize_vendor_name(value: object) -> str:
+    text = str(value or "").strip()
+    if "-" in text:
+        text = text.split("-", 1)[1]
+    return re.sub(r"\s+", " ", text).strip().upper()
+
+
+def normalize_planner_focus(value: object) -> str:
+    cleaned = clean_name(value).replace("_", " ").upper().strip()
+    for alias, focus_name in PLANNER_OBJECTIVE_ALIASES.items():
+        if alias in cleaned:
+            return focus_name
+    for focus_name in PLANNER_FOCUS_RULES:
+        if clean_name(focus_name).replace("_", " ").upper() in cleaned:
+            return focus_name
+    return str(value or "").strip()
+
+
+def parse_objective_cell(value: object) -> float:
+    if value is None or pd.isna(value):
+        return np.nan
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return np.nan
+    if "," in text:
+        return float(parse_argentine_number(pd.Series([text])).iloc[0])
+    return float(pd.to_numeric(text, errors="coerce"))
+
+
+def parse_cross_planner_objectives(path: Path) -> pd.DataFrame:
+    source = pd.read_excel(path, sheet_name=0, header=None)
+    header_index = None
+    for index, row in source.iterrows():
+        values = row.fillna("").astype(str).tolist()
+        if any("descripcion" in clean_name(value) for value in values) and sum("-" in value for value in values) >= 2:
+            header_index = index
+            break
+    if header_index is None:
+        raise ValueError("No pude detectar la fila de vendedores en objetivos.")
+    header = source.loc[header_index]
+    vendor_columns = {
+        col: normalize_vendor_name(value)
+        for col, value in header.items()
+        if col >= 2 and "-" in str(value) and normalize_vendor_name(value)
+    }
+    rows: list[dict[str, object]] = []
+    for _, row in source.loc[header_index + 1 :].iterrows():
+        focus_name = normalize_planner_focus(row.iloc[1] if len(row) > 1 else "")
+        if focus_name not in PLANNER_FOCUS_RULES:
+            continue
+        for col, vendor in vendor_columns.items():
+            value = parse_objective_cell(row.get(col))
+            if not pd.isna(value):
+                rows.append({"promotor": vendor, "foco": focus_name, "objetivo_mes": float(value)})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(show_spinner=False)
+def load_planner_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
+    path = Path(path_text)
+    if path.suffix.lower() in {".xlsx", ".xls"}:
+        try:
+            result = parse_cross_planner_objectives(path)
+        except Exception:
+            source = pd.read_excel(path, dtype="string")
+            source.columns = make_unique_columns(list(source.columns))
+            vendor_col = next((col for col in source.columns if "vendedor" in col or "promotor" in col), None)
+            focus_col = next((col for col in source.columns if "foco" in col or "segmento" in col or "division" in col), None)
+            obj_col = next((col for col in source.columns if "objet" in col or "plan" in col), None)
+            if vendor_col is None or obj_col is None:
+                raise
+            result = pd.DataFrame(
+                {
+                    "promotor": source[vendor_col].map(normalize_vendor_name),
+                    "foco": source[focus_col].map(normalize_planner_focus) if focus_col else "",
+                    "objetivo_mes": parse_argentine_number(source[obj_col]),
+                }
+            )
+    else:
+        source = read_tabular(path)
+        source.columns = make_unique_columns(list(source.columns))
+        vendor_col = next((col for col in source.columns if "vendedor" in col or "promotor" in col), None)
+        focus_col = next((col for col in source.columns if "foco" in col or "segmento" in col or "division" in col), None)
+        obj_col = next((col for col in source.columns if "objet" in col or "plan" in col), None)
+        if vendor_col is None or obj_col is None:
+            raise ValueError("El archivo de objetivos por vendedor debe tener vendedor/promotor y objetivo.")
+        result = pd.DataFrame(
+            {
+                "promotor": source[vendor_col].map(normalize_vendor_name),
+                "foco": source[focus_col].map(normalize_planner_focus) if focus_col else "",
+                "objetivo_mes": parse_argentine_number(source[obj_col]),
+            }
+        )
+    result = result.dropna(subset=["objetivo_mes"])
+    result = result[result["promotor"].astype(str).str.strip() != ""].copy()
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
+    return result, info
+
+
 def normalize(raw: pd.DataFrame) -> pd.DataFrame:
     df = raw.copy()
     df.columns = make_unique_columns(list(df.columns))
@@ -1088,6 +1292,19 @@ def weighted_selling_days(start: pd.Timestamp, end: pd.Timestamp) -> float:
     return float(sum(selling_day_weight(date, holiday_dates) for date in dates))
 
 
+def selling_days_in_month(date_value: pd.Timestamp) -> float:
+    date_value = pd.Timestamp(date_value).normalize()
+    month_start = date_value.replace(day=1)
+    month_end = month_start + pd.offsets.MonthEnd(0)
+    return weighted_selling_days(month_start, month_end)
+
+
+def selling_days_remaining_from(date_value: pd.Timestamp) -> float:
+    date_value = pd.Timestamp(date_value).normalize()
+    month_end = date_value.replace(day=1) + pd.offsets.MonthEnd(0)
+    return weighted_selling_days(date_value, month_end)
+
+
 def next_selling_day(date_value: pd.Timestamp) -> pd.Timestamp:
     candidate = pd.Timestamp(date_value).normalize() + pd.Timedelta(days=1)
     while True:
@@ -1179,6 +1396,167 @@ def format_pct(value: float | None) -> str:
     if value is None or pd.isna(value):
         return "-"
     return f"{value:+.1f}%".replace(".", ",")
+
+
+def format_pct_plain(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:.0f}%".replace(".", ",")
+
+
+def valid_nonzero(value: object) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    try:
+        return float(value) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def planner_store_path(folder: Path) -> Path:
+    return folder / PLANNER_STORE_FILE_NAME
+
+
+def load_saved_planner(folder: Path) -> pd.DataFrame:
+    columns = ["fecha", "foco", "promotor", "planificado"]
+    path = planner_store_path(folder)
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+    try:
+        saved = pd.read_csv(path, sep=";", dtype="string")
+    except Exception:
+        return pd.DataFrame(columns=columns)
+    for column in columns:
+        if column not in saved.columns:
+            saved[column] = np.nan
+    saved = saved[columns].copy()
+    saved["fecha"] = pd.to_datetime(saved["fecha"], errors="coerce")
+    saved["promotor"] = saved["promotor"].map(normalize_vendor_name)
+    saved["planificado"] = saved["planificado"].map(parse_objective_cell)
+    return saved.dropna(subset=["fecha"])
+
+
+def save_daily_plan(folder: Path, selected_date: pd.Timestamp, focus_name: str, plan_df: pd.DataFrame) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = load_saved_planner(folder)
+    new_rows = plan_df[["promotor", "PLANIFICADO"]].copy()
+    new_rows["promotor"] = new_rows["promotor"].map(normalize_vendor_name)
+    new_rows["planificado"] = pd.to_numeric(new_rows["PLANIFICADO"], errors="coerce")
+    new_rows["fecha"] = pd.Timestamp(selected_date).normalize()
+    new_rows["foco"] = focus_name
+    new_rows = new_rows[["fecha", "foco", "promotor", "planificado"]]
+    if not saved.empty:
+        same_key = (saved["fecha"] == pd.Timestamp(selected_date).normalize()) & (saved["foco"] == focus_name)
+        saved = saved.loc[~same_key].copy()
+    output = pd.concat([saved, new_rows], ignore_index=True)
+    output["fecha"] = pd.to_datetime(output["fecha"]).dt.strftime("%Y-%m-%d")
+    path = planner_store_path(folder)
+    output.to_csv(path, sep=";", index=False)
+    return path
+
+
+def filter_focus(df: pd.DataFrame, focus_name: str) -> pd.DataFrame:
+    result = df.copy()
+    for column, allowed in PLANNER_FOCUS_RULES[focus_name].items():
+        if column in {"title", "caption"}:
+            continue
+        if column in result.columns:
+            result = result[result[column].astype(str).isin(allowed)]
+    return result
+
+
+def build_daily_planner_table(
+    current_df: pd.DataFrame,
+    selected_date: pd.Timestamp,
+    focus_name: str,
+    objectives: pd.DataFrame,
+    saved_plan: pd.DataFrame,
+) -> pd.DataFrame:
+    focus_df = filter_focus(current_df, focus_name)
+    real = (
+        focus_df[focus_df["fecha"] == selected_date]
+        .groupby(["mesa", "promotor"], as_index=False)["hl"]
+        .sum()
+        .rename(columns={"hl": "REAL"})
+    )
+    vendors = focus_df[["mesa", "promotor"]].drop_duplicates()
+    if real.empty:
+        real = vendors.assign(REAL=0.0)
+    else:
+        real = vendors.merge(real, on=["mesa", "promotor"], how="left").fillna({"REAL": 0.0})
+
+    month_start = selected_date.replace(day=1)
+    accum = (
+        focus_df[(focus_df["fecha"] >= month_start) & (focus_df["fecha"] < selected_date)]
+        .groupby("promotor", as_index=False)["hl"]
+        .sum()
+        .rename(columns={"hl": "ACUM. ANT."})
+    )
+    media_real = (
+        focus_df[focus_df["fecha"] < selected_date]
+        .groupby(["promotor", "fecha"], as_index=False)["hl"]
+        .sum()
+        .sort_values("fecha")
+        .groupby("promotor", as_index=False)
+        .tail(28)
+        .groupby("promotor", as_index=False)["hl"]
+        .mean()
+        .rename(columns={"hl": "MEDIA REAL"})
+    )
+    table = real.merge(accum, on="promotor", how="left").merge(media_real, on="promotor", how="left")
+    table["ACUM. ANT."] = table["ACUM. ANT."].fillna(0.0)
+
+    if not objectives.empty:
+        objective_lookup = objectives[objectives["foco"].map(normalize_planner_focus).eq(focus_name)].copy()
+        objective_lookup["promotor_key"] = objective_lookup["promotor"].map(normalize_vendor_name)
+        table["promotor_key"] = table["promotor"].map(normalize_vendor_name)
+        table = table.merge(
+            objective_lookup.drop_duplicates("promotor_key", keep="last")[["promotor_key", "objetivo_mes"]],
+            on="promotor_key",
+            how="left",
+        )
+    else:
+        table["objetivo_mes"] = np.nan
+
+    if not saved_plan.empty:
+        plan = saved_plan[(saved_plan["fecha"] == selected_date) & (saved_plan["foco"] == focus_name)].copy()
+        plan["promotor_key"] = plan["promotor"].map(normalize_vendor_name)
+        if "promotor_key" not in table.columns:
+            table["promotor_key"] = table["promotor"].map(normalize_vendor_name)
+        table = table.merge(plan.drop_duplicates("promotor_key", keep="last")[["promotor_key", "planificado"]], on="promotor_key", how="left")
+    else:
+        table["planificado"] = np.nan
+
+    remaining_days = selling_days_remaining_from(selected_date)
+    table["OBJETIVO MES"] = table["objetivo_mes"]
+    table["DIAS HABILES MES"] = selling_days_in_month(selected_date)
+    table["DIAS RESTANTES"] = remaining_days
+    table["PLANIFICADO"] = table["planificado"]
+    table["MEDIA NEC."] = np.where(
+        (table["OBJETIVO MES"].fillna(0) != 0) & (remaining_days > 0),
+        (table["OBJETIVO MES"] - table["ACUM. ANT."]) / remaining_days,
+        np.nan,
+    )
+    table["MEDIA NEC."] = table["MEDIA NEC."].clip(lower=0)
+    table["AVANCE"] = np.where(table["PLANIFICADO"].fillna(0) != 0, table["REAL"] / table["PLANIFICADO"] * 100, np.nan)
+    table["VS MEDIA NEC."] = np.where(table["MEDIA NEC."].fillna(0) != 0, table["REAL"] / table["MEDIA NEC."] * 100, np.nan)
+    table["VS MEDIA REAL"] = np.where(table["MEDIA REAL"].fillna(0) != 0, table["REAL"] / table["MEDIA REAL"] * 100, np.nan)
+    columns = [
+        "mesa",
+        "promotor",
+        "OBJETIVO MES",
+        "ACUM. ANT.",
+        "DIAS HABILES MES",
+        "DIAS RESTANTES",
+        "PLANIFICADO",
+        "REAL",
+        "AVANCE",
+        "MEDIA NEC.",
+        "MEDIA REAL",
+        "VS MEDIA NEC.",
+        "VS MEDIA REAL",
+    ]
+    return table[columns].sort_values(["mesa", "REAL"], ascending=[True, False])
 
 
 def metric_card(title: str, value: str, sub: str, accent: str = "blue") -> None:
@@ -1584,12 +1962,12 @@ def executive_summary_table(
         total["TENDENCIA VS AA"] = total["TENDENCIA"] / total["AA"] * 100 if total["AA"] else np.nan
         total["OBJ VS VENTAS"] = (
             total["ACUM. ACTUAL"] / total["OBJ VTAS"] * 100
-            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            if valid_nonzero(total["OBJ VTAS"])
             else np.nan
         )
         total["TEND VS VENTAS"] = (
             total["TENDENCIA"] / total["OBJ VTAS"] * 100
-            if total["OBJ VTAS"] and not pd.isna(total["OBJ VTAS"])
+            if valid_nonzero(total["OBJ VTAS"])
             else np.nan
         )
         table = pd.concat([pd.DataFrame([total]), table], ignore_index=True)
@@ -1626,6 +2004,58 @@ def render_exec_table(title: str, table: pd.DataFrame, first_col: str) -> None:
             <div class="exec-title">{title}</div>
             <table class="exec-table">
                 <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def pct_class(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return "good" if float(value) >= 100 else "bad"
+
+
+def render_planner_table(title: str, focus_name: str, table: pd.DataFrame) -> None:
+    headers = ["", "PLANIFICADO", "REAL", "AVANCE", "MEDIA NEC.", "MEDIA REAL", "VS MEDIA NEC.", "VS MEDIA REAL"]
+    percent_cols = {"AVANCE", "VS MEDIA NEC.", "VS MEDIA REAL"}
+    yellow_headers = {"PLANIFICADO", "VS MEDIA NEC.", "VS MEDIA REAL"}
+    rows: list[str] = []
+    total = {
+        "PLANIFICADO": table["PLANIFICADO"].sum(min_count=1),
+        "REAL": table["REAL"].sum(min_count=1),
+        "MEDIA NEC.": table["MEDIA NEC."].sum(min_count=1),
+        "MEDIA REAL": table["MEDIA REAL"].sum(min_count=1),
+    }
+    total["AVANCE"] = total["REAL"] / total["PLANIFICADO"] * 100 if valid_nonzero(total["PLANIFICADO"]) else np.nan
+    total["VS MEDIA NEC."] = total["REAL"] / total["MEDIA NEC."] * 100 if valid_nonzero(total["MEDIA NEC."]) else np.nan
+    total["VS MEDIA REAL"] = total["REAL"] / total["MEDIA REAL"] * 100 if valid_nonzero(total["MEDIA REAL"]) else np.nan
+    total_cells = ["<td>TOTAL</td>"]
+    for column in headers[1:]:
+        cls = pct_class(total[column]) if column in percent_cols else ""
+        total_cells.append(f"<td class='{cls}'>{format_pct_plain(total[column]) if column in percent_cols else format_hl(total[column])}</td>")
+    rows.append(f"<tr class='total-row'>{''.join(total_cells)}</tr>")
+
+    for mesa, group in table.groupby("mesa", dropna=False):
+        rows.append(f"<tr class='mesa-row'><td colspan='8'>{mesa}</td></tr>")
+        for _, row in group.iterrows():
+            cells = [f"<td>{row['promotor']}</td>"]
+            for column in headers[1:]:
+                cls = pct_class(row[column]) if column in percent_cols else ""
+                cells.append(f"<td class='{cls}'>{format_pct_plain(row[column]) if column in percent_cols else format_hl(row[column])}</td>")
+            rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    header_cells = "".join(f"<th class='{'yellow' if header in yellow_headers else ''}'>{header}</th>" for header in headers)
+    caption = PLANNER_FOCUS_RULES[focus_name]["caption"]
+    st.markdown(
+        f"""
+        <div class="exec-wrap">
+            <div class="exec-title">{title}</div>
+            <div class="planner-note">{focus_name}<br>{caption}</div>
+            <table class="planner-table">
+                <thead><tr>{header_cells}</tr></thead>
                 <tbody>{''.join(rows)}</tbody>
             </table>
         </div>
@@ -1750,6 +2180,86 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
     return buffer.getvalue()
 
 
+def planner_table_for_pdf(table: pd.DataFrame) -> list[list[str]]:
+    columns = ["promotor", "OBJETIVO MES", "ACUM. ANT.", "PLANIFICADO", "REAL", "AVANCE", "MEDIA NEC.", "MEDIA REAL", "VS MEDIA NEC.", "VS MEDIA REAL"]
+    headers = ["VENDEDOR", "OBJ MES", "ACUM ANT", "PLANIF", "REAL", "AVANCE", "MEDIA NEC", "MEDIA REAL", "VS M NEC", "VS M REAL"]
+    output = [headers]
+    for _, row in table[columns].iterrows():
+        output.append(
+            [
+                str(row["promotor"]),
+                format_hl(row["OBJETIVO MES"]),
+                format_hl(row["ACUM. ANT."]),
+                format_hl(row["PLANIFICADO"]),
+                format_hl(row["REAL"]),
+                format_pct_plain(row["AVANCE"]),
+                format_hl(row["MEDIA NEC."]),
+                format_hl(row["MEDIA REAL"]),
+                format_pct_plain(row["VS MEDIA NEC."]),
+                format_pct_plain(row["VS MEDIA REAL"]),
+            ]
+        )
+    return output
+
+
+def build_planner_pdf(tables: list[tuple[str, str, pd.DataFrame]], selected_date: pd.Timestamp) -> bytes:
+    buffer = io.BytesIO()
+    page_width, _ = landscape(A4)
+    margin = 16
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=margin,
+        leftMargin=margin,
+        topMargin=16,
+        bottomMargin=16,
+        title="Cierre planificador diario",
+    )
+    usable_width = page_width - 2 * margin
+    elements = [
+        Paragraph(
+            f"Cierre planificador diario - {selected_date.strftime('%d/%m/%Y')}",
+            ParagraphStyle("PlannerTitle", fontName="Helvetica-Bold", fontSize=16, leading=18, textColor=colors.HexColor("#111827"), spaceAfter=8),
+        )
+    ]
+    col_widths = [usable_width * 0.22] + [usable_width * 0.078] * 9
+    for index, (title, caption, table) in enumerate(tables):
+        if table.empty:
+            continue
+        elements.append(
+            Paragraph(
+                f"{title} - {caption}",
+                ParagraphStyle("PlannerSection", fontName="Helvetica-Bold", fontSize=9, leading=11, textColor=colors.HexColor("#111827"), spaceBefore=5, spaceAfter=3),
+            )
+        )
+        report_table = Table(planner_table_for_pdf(table), colWidths=col_widths, repeatRows=1)
+        style_commands = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0070C0")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 6.2),
+            ("FONTSIZE", (0, 1), (-1, -1), 6.0),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.black),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ]
+        for row_index, (_, row) in enumerate(table.iterrows(), start=1):
+            for col_index, column in ((5, "AVANCE"), (8, "VS MEDIA NEC."), (9, "VS MEDIA REAL")):
+                if pd.isna(row[column]):
+                    continue
+                style_commands.append(("BACKGROUND", (col_index, row_index), (col_index, row_index), colors.HexColor("#C6EFCE") if row[column] >= 100 else colors.HexColor("#FFC7CE")))
+        report_table.setStyle(TableStyle(style_commands))
+        elements.extend([report_table, Spacer(1, 7)])
+        if index == 1:
+            elements.append(PageBreak())
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def main() -> None:
     page_setup()
     st.markdown(
@@ -1823,6 +2333,19 @@ def main() -> None:
         except Exception as exc:
             st.sidebar.warning(f"No pude leer objetivos; uso objetivos de mayo de respaldo: {exc}")
 
+    planner_objectives_df = pd.DataFrame(columns=["promotor", "foco", "objetivo_mes"])
+    planner_objectives_info: SourceInfo | None = None
+    planner_objectives_file = latest_planner_objectives_file_in_folder(DEFAULT_DATA_DIR)
+    if planner_objectives_file is not None:
+        try:
+            planner_objectives_df, planner_objectives_info = load_planner_objectives(
+                str(planner_objectives_file),
+                planner_objectives_file.stat().st_mtime_ns,
+            )
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer objetivos por vendedor/segmento: {exc}")
+    saved_planner_df = load_saved_planner(DEFAULT_DATA_DIR)
+
     annual_df: pd.DataFrame | None = None
     annual_info: SourceInfo | None = None
     annual_warning = "No se encontro archivo de venta anual para comparacion AA"
@@ -1852,6 +2375,10 @@ def main() -> None:
         st.sidebar.success(f"Objetivos: {objectives_info.label}")
     else:
         st.sidebar.info("Objetivos: respaldo mayo cargado hasta que agregues objetivos.xlsx")
+    if planner_objectives_info is not None:
+        st.sidebar.success(f"Objetivos vendedor: {planner_objectives_info.label}")
+    else:
+        st.sidebar.info("Planificador: falta archivo de objetivos por vendedor/segmento")
     if aux_info is not None:
         st.sidebar.success(f"Auxiliares: {aux_info.label}")
     if annual_info is not None:
@@ -1947,8 +2474,8 @@ def main() -> None:
                 "blue" if window == 7 else "green" if window == 14 else "orange" if window == 21 else "violet",
             )
 
-    tab_overview, tab_informe, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
-        ["Evolucion", "Informe", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
+    tab_overview, tab_informe, tab_daily_planner, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
+        ["Evolucion", "Informe", "Planificador diario", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
     )
 
     with tab_overview:
@@ -2082,6 +2609,91 @@ def main() -> None:
             render_exec_table(*informe_tables[4])
             render_exec_table(*informe_tables[5])
             render_exec_table(*informe_tables[6])
+
+    with tab_daily_planner:
+        st.subheader("Planificador diario")
+        if planner_objectives_info is None:
+            st.warning(
+                "No encontre archivo de objetivos por vendedor/segmento. "
+                "Podes cargar PLANIFICADO y ver REAL, pero MEDIA NEC. queda en blanco."
+            )
+        else:
+            st.caption(f"Objetivos por vendedor/segmento: {planner_objectives_info.label}")
+
+        st.caption(
+            "Carga el PLANIFICADO a la manana y guardalo. "
+            "Cuando actualices venta diaria, el REAL se cruza contra esa planificacion guardada."
+        )
+
+        planner_pdf_tables: list[tuple[str, str, pd.DataFrame]] = []
+        focus_tabs = st.tabs([name.replace(" - ", "\n") for name in PLANNER_FOCUS_RULES])
+        for focus_tab, focus_name in zip(focus_tabs, PLANNER_FOCUS_RULES):
+            with focus_tab:
+                planner_table = build_daily_planner_table(
+                    filtered,
+                    selected_date,
+                    focus_name,
+                    planner_objectives_df,
+                    saved_planner_df,
+                )
+                if planner_table.empty:
+                    st.info("No hay vendedores para este foco con los filtros seleccionados.")
+                    continue
+                editable_columns = [
+                    "mesa",
+                    "promotor",
+                    "OBJETIVO MES",
+                    "ACUM. ANT.",
+                    "DIAS HABILES MES",
+                    "DIAS RESTANTES",
+                    "PLANIFICADO",
+                ]
+                edited_plan = st.data_editor(
+                    planner_table[editable_columns],
+                    key=f"daily_planner_editor_{focus_name}",
+                    width="stretch",
+                    hide_index=True,
+                    disabled=[column for column in editable_columns if column != "PLANIFICADO"],
+                    column_config={
+                        "PLANIFICADO": st.column_config.NumberColumn("PLANIFICADO", min_value=0.0, step=0.1, format="%.2f"),
+                        "OBJETIVO MES": st.column_config.NumberColumn("OBJETIVO MES", format="%.2f"),
+                        "ACUM. ANT.": st.column_config.NumberColumn("ACUM. ANT.", format="%.2f"),
+                        "DIAS HABILES MES": st.column_config.NumberColumn("DIAS HABILES MES", format="%.1f"),
+                        "DIAS RESTANTES": st.column_config.NumberColumn("DIAS RESTANTES", format="%.1f"),
+                    },
+                )
+                if st.button("Guardar planificado del dia", key=f"save_daily_plan_{focus_name}", width="stretch"):
+                    saved_path = save_daily_plan(DEFAULT_DATA_DIR, selected_date, focus_name, edited_plan)
+                    st.success(f"Planificado guardado en {saved_path}")
+                    st.rerun()
+
+                display_table = planner_table.drop(columns=["PLANIFICADO"]).merge(
+                    edited_plan[["promotor", "PLANIFICADO"]],
+                    on="promotor",
+                    how="left",
+                )
+                display_table["AVANCE"] = np.where(
+                    display_table["PLANIFICADO"].fillna(0) != 0,
+                    display_table["REAL"] / display_table["PLANIFICADO"] * 100,
+                    np.nan,
+                )
+                render_planner_table(PLANNER_FOCUS_RULES[focus_name]["title"], focus_name, display_table)
+                planner_pdf_tables.append(
+                    (
+                        PLANNER_FOCUS_RULES[focus_name]["title"],
+                        PLANNER_FOCUS_RULES[focus_name]["caption"],
+                        display_table.copy(),
+                    )
+                )
+
+        if planner_pdf_tables:
+            st.download_button(
+                "Generar PDF cierre del dia",
+                data=build_planner_pdf(planner_pdf_tables, selected_date),
+                file_name=f"cierre_planificador_{selected_date.strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
 
     with tab_aa:
         if annual_info is None or annual_filtered is None or annual_filtered.empty:
