@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -157,9 +158,9 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
         return None
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp"
+    tmp_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp_{int(time.time())}"
     if tmp_target.exists():
-        shutil.rmtree(tmp_target)
+        shutil.rmtree(tmp_target, ignore_errors=True)
     tmp_target.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -169,9 +170,12 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | No
 
     if tmp_target.exists() and any(tmp_target.iterdir()):
         if target.exists():
-            shutil.rmtree(target)
-        tmp_target.rename(target)
-        return target
+            shutil.rmtree(target, ignore_errors=True)
+        try:
+            tmp_target.rename(target)
+            return target
+        except Exception:
+            return tmp_target
     return target if target.exists() and any(target.iterdir()) else None
 
 
@@ -737,9 +741,9 @@ def read_tabular(source: str | Path | io.BytesIO) -> pd.DataFrame:
                 sep="\t",
                 dtype="string",
                 encoding=encoding,
-                engine="python",
+                engine="c",
             )
-        except UnicodeDecodeError as exc:
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
             last_error = exc
     raise RuntimeError(f"No pude detectar la codificacion del archivo: {last_error}")
 
@@ -757,6 +761,42 @@ def classify_customer_channel(value: str | None) -> str:
     return "NO"
 
 
+def read_excel_selected_columns(path: Path, sheet_name: str, wanted_columns: list[str], header_row: int = 2) -> pd.DataFrame:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    if sheet_name not in workbook.sheetnames:
+        return pd.DataFrame(columns=wanted_columns)
+    return read_excel_selected_columns_from_sheet(workbook[sheet_name], wanted_columns, header_row)
+
+
+def read_excel_selected_columns_from_sheet(sheet, wanted_columns: list[str], header_row: int = 2) -> pd.DataFrame:
+    header_values = next(sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True), ())
+    header_map = {str(value).strip(): index for index, value in enumerate(header_values) if value is not None}
+    indexes = [header_map[column] for column in wanted_columns if column in header_map]
+    names = [column for column in wanted_columns if column in header_map]
+    if not indexes:
+        return pd.DataFrame(columns=wanted_columns)
+
+    rows = []
+    for values in sheet.iter_rows(min_row=header_row + 1, values_only=True):
+        rows.append([values[index] if index < len(values) else None for index in indexes])
+    return pd.DataFrame(rows, columns=names, dtype="string")
+
+
+def workbook_sheet_name(path: Path, contains: str) -> str | None:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    target = clean_name(contains)
+    return next((name for name in workbook.sheetnames if target in clean_name(name)), None)
+
+
+def workbook_sheet_name_from_workbook(workbook, contains: str) -> str | None:
+    target = clean_name(contains)
+    return next((name for name in workbook.sheetnames if target in clean_name(name)), None)
+
+
 def load_customer_channels(
     path_text: str,
     modified_ns: int,
@@ -764,12 +804,22 @@ def load_customer_channels(
 ) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
     if path.suffix.lower() in {".xlsx", ".xls"}:
-        excel = pd.ExcelFile(path)
-        customers = pd.read_excel(path, sheet_name="Clientes", header=1, dtype="string")
-        price_lists = pd.read_excel(path, sheet_name="Listas de precios", header=1, dtype="string")
-        hierarchy_sheet = next((sheet for sheet in excel.sheet_names if "Jerarqu" in sheet), None)
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        customers = (
+            read_excel_selected_columns_from_sheet(workbook["Clientes"], ["Cliente", "Lista de precios", "Subcanal MKT"])
+            if "Clientes" in workbook.sheetnames
+            else pd.DataFrame(columns=["Cliente", "Lista de precios", "Subcanal MKT"])
+        )
+        price_lists = (
+            read_excel_selected_columns_from_sheet(workbook["Listas de precios"], ["Código", "Descripción"])
+            if "Listas de precios" in workbook.sheetnames
+            else pd.DataFrame(columns=["Código", "Descripción"])
+        )
+        hierarchy_sheet = workbook_sheet_name_from_workbook(workbook, "Jerarqu")
         hierarchy = (
-            pd.read_excel(path, sheet_name=hierarchy_sheet, header=1, dtype="string")
+            read_excel_selected_columns_from_sheet(workbook[hierarchy_sheet], ["Código", "Segmento MKT", "Canal MKT", "Subcanal MKT"])
             if hierarchy_sheet
             else pd.DataFrame()
         )
@@ -2451,6 +2501,11 @@ def main() -> None:
     if st.sidebar.button("Actualizar datos", width="stretch"):
         st.cache_data.clear()
         st.rerun()
+    load_annual_comparison = st.sidebar.checkbox(
+        "Cargar comparacion AA",
+        value=True,
+        help="Activalo cuando necesites comparar contra venta anual. El archivo anual es pesado y puede demorar.",
+    )
 
     uploaded = st.sidebar.file_uploader("Carga manual si falla la carpeta", type=["txt", "csv"])
 
@@ -2510,7 +2565,9 @@ def main() -> None:
     annual_df: pd.DataFrame | None = None
     annual_info: SourceInfo | None = None
     annual_warning = "No se encontro archivo de venta anual para comparacion AA"
-    if uploaded is None:
+    if uploaded is not None:
+        st.sidebar.info("La comparacion AA automatica se omite cuando se usa carga manual.")
+    elif load_annual_comparison:
         annual_file = latest_annual_file_in_folder(DEFAULT_DATA_DIR)
         if annual_file is not None:
             try:
@@ -2521,7 +2578,7 @@ def main() -> None:
             except Exception as exc:
                 st.sidebar.warning(f"{annual_warning}: {exc}")
     else:
-        st.sidebar.info("La comparacion AA automatica se omite cuando se usa carga manual.")
+        st.sidebar.info("AA desactivado para abrir rapido. Marque 'Cargar comparacion AA' si lo necesita.")
 
     st.sidebar.success(f"Fuente: {info.label}")
     if info.modified:
@@ -2542,7 +2599,7 @@ def main() -> None:
         st.sidebar.success(f"AA: {annual_info.label}")
         if annual_info.modified:
             st.sidebar.caption(f"Modificado AA: {annual_info.modified}")
-    else:
+    elif load_annual_comparison:
         st.sidebar.warning(annual_warning)
 
     filtered, selected_date, dimension_filters = apply_filters(df)
