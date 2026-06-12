@@ -242,15 +242,22 @@ function upsertBDPlanificacion(ss, row) {
     sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#d9eaf7");
   }
   const values = sheet.getDataRange().getValues();
-  const key = `${row.fecha}|${row.foco}|${row.promotor}`;
+  const key = `${normalizarFecha(row.fecha)}|${row.foco}|${row.promotor}`;
   for (let r = 1; r < values.length; r++) {
-    const existingKey = `${values[r][0]}|${values[r][1]}|${normalizarPromotor(values[r][2])}`;
+    const existingKey = `${normalizarFecha(values[r][0])}|${values[r][1]}|${normalizarPromotor(values[r][2])}`;
     if (existingKey === key) {
       sheet.getRange(r + 1, 1, 1, 7).setValues([[row.fecha, row.foco, row.promotor, row.planificado, row.supervisor, row.celda, row.actualizado]]);
       return;
     }
   }
   sheet.appendRow([row.fecha, row.foco, row.promotor, row.planificado, row.supervisor, row.celda, row.actualizado]);
+}
+
+function normalizarFecha(value) {
+  if (Object.prototype.toString.call(value) === "[object Date]" && !isNaN(value)) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  }
+  return String(value || "").trim();
 }
 
 function normalizarFoco(value) {

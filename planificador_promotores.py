@@ -40,6 +40,12 @@ FOCUS_ALIASES = {
     "AGUAS": "AGUAS",
     "TOTAL AGUAS": "AGUAS",
 }
+OBJECTIVE_CODE_FOCUS = {
+    "2218": "TOTAL CERVEZAS",
+    "19341": "TOTAL UNG",
+    "18743": "AGUAS",
+    "16667": "VOLUMEN ABOVE CORE",
+}
 
 FOCUS_ORDER = ["TOTAL CERVEZAS", "VOLUMEN ABOVE CORE", "TOTAL UNG", "AGUAS"]
 SALES_FOCUS_MAP = {
@@ -88,6 +94,16 @@ def normalize_promoter(value: object) -> str:
 def normalize_focus(value: object) -> str:
     text = clean_text(value)
     return FOCUS_ALIASES.get(text, "")
+
+
+def normalize_objective_focus(description: object, code_value: object = "") -> str:
+    focus = normalize_focus(description)
+    if focus:
+        return focus
+    code_match = re.search(r"(\d+)", clean_text(code_value))
+    if not code_match:
+        return ""
+    return OBJECTIVE_CODE_FOCUS.get(code_match.group(1), "")
 
 
 def parse_number(value: object) -> float:
@@ -169,14 +185,14 @@ def parse_objectives_file(path: Path) -> pd.DataFrame:
                 if col >= 2 and "-" in str(value) and normalize_promoter(value)
             }
             for _, row in source.loc[header_index + 1 :].iterrows():
-                focus = normalize_focus(row.iloc[1] if len(row) > 1 else "")
+                focus = normalize_objective_focus(row.iloc[1] if len(row) > 1 else "", row.iloc[0] if len(row) > 0 else "")
                 if not focus:
                     continue
                 for col, promoter in vendor_columns.items():
                     objective = parse_number(row.get(col))
                     if not pd.isna(objective):
                         rows.append({"promotor": promoter, "foco": focus, "objetivo_drive": objective})
-            return pd.DataFrame(rows)
+            return pd.DataFrame(rows, columns=["promotor", "foco", "objetivo_drive"])
 
         table = pd.read_excel(path, dtype="string")
     else:
@@ -358,7 +374,7 @@ def cell_name(row_index: int, col_index: int) -> str:
 
 
 @st.cache_data(show_spinner=False, ttl=120)
-def load_sheet(sheet_url: str) -> pd.DataFrame:
+def load_sheet(sheet_url: str, selected_date_key: str = "") -> pd.DataFrame:
     workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, header=None)
     rows: list[dict[str, object]] = []
     for sheet_name, sheet in workbook.items():
@@ -412,7 +428,7 @@ def load_sheet(sheet_url: str) -> pd.DataFrame:
     if result.empty:
         return pd.DataFrame(columns=["supervisor", "foco", "promotor", "objetivo", "planificado", "celda_planificacion"])
     result = result.drop_duplicates(["supervisor", "foco", "promotor"], keep="last")
-    db_plan = parse_planning_db(workbook)
+    db_plan = parse_planning_db(workbook, selected_date_key)
     if not db_plan.empty:
         result["promotor_key"] = result["promotor"].map(normalize_promoter)
         result["foco_key"] = result["foco"].map(normalize_focus)
@@ -426,7 +442,18 @@ def load_sheet(sheet_url: str) -> pd.DataFrame:
     return result
 
 
-def parse_planning_db(workbook: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def sheet_date_key(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(str(value), errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return clean_text(value)
+    return pd.Timestamp(parsed).strftime("%Y-%m-%d")
+
+
+def parse_planning_db(workbook: dict[str, pd.DataFrame], selected_date_key: str = "") -> pd.DataFrame:
     db_sheet = next((sheet for name, sheet in workbook.items() if clean_text(name) == "BD PLANIFICACION"), None)
     if db_sheet is None or db_sheet.empty:
         return pd.DataFrame(columns=["promotor_key", "foco_key", "planificado_db"])
@@ -437,6 +464,8 @@ def parse_planning_db(workbook: dict[str, pd.DataFrame]) -> pd.DataFrame:
         return pd.DataFrame(columns=["promotor_key", "foco_key", "planificado_db"])
     rows = []
     for _, row in db_sheet.iloc[1:].iterrows():
+        if selected_date_key and "FECHA" in col_map and sheet_date_key(row.iloc[col_map["FECHA"]]) != selected_date_key:
+            continue
         focus = normalize_focus(row.iloc[col_map["FOCO"]])
         promoter = normalize_promoter(row.iloc[col_map["PROMOTOR"]])
         plan = parse_number(row.iloc[col_map["PLANIFICADO"]])
@@ -999,11 +1028,27 @@ def main() -> None:
     st.sidebar.code(sheet_url, language=None)
 
     try:
-        planning = load_sheet(sheet_url)
-        sheet_days = load_sheet_days(sheet_url)
         refresh_nonce = float(st.session_state.get("drive_refresh_nonce", 0.0))
         drive_objectives, objective_label = load_drive_objectives(drive_url, refresh_nonce)
         sales, sales_label = load_sales_from_drive(drive_url, refresh_nonce)
+        sheet_days = load_sheet_days(sheet_url)
+    except Exception as exc:
+        st.error(f"No pude leer las fuentes del planificador: {exc}")
+        st.stop()
+
+    if not sales.empty:
+        latest_invoice_date = pd.Timestamp(sales["fecha"].dropna().max()).normalize()
+        default_date = sales_app.next_selling_day(latest_invoice_date)
+        st.sidebar.caption(f"Ultima facturacion: {latest_invoice_date.strftime('%d/%m/%Y')}")
+    else:
+        default_date = pd.Timestamp.today().normalize()
+    selected_date = pd.Timestamp(
+        st.sidebar.date_input("Fecha de planificacion", value=pd.Timestamp(default_date).date())
+    ).normalize()
+    selected_date_key = selected_date.strftime("%Y-%m-%d")
+
+    try:
+        planning = load_sheet(sheet_url, selected_date_key)
         st.session_state["drive_refresh_nonce"] = 0.0
     except Exception as exc:
         st.error(f"No pude leer el Sheet de planificacion: {exc}")
@@ -1022,16 +1067,6 @@ def main() -> None:
         st.sidebar.success(f"Venta diaria: {sales_label}")
     else:
         st.sidebar.warning("No encontre venta diaria para calcular REAL y MEDIA REAL.")
-
-    if not sales.empty:
-        latest_invoice_date = pd.Timestamp(sales["fecha"].dropna().max()).normalize()
-        default_date = sales_app.next_selling_day(latest_invoice_date)
-        st.sidebar.caption(f"Ultima facturacion: {latest_invoice_date.strftime('%d/%m/%Y')}")
-    else:
-        default_date = pd.Timestamp.today().normalize()
-    selected_date = pd.Timestamp(
-        st.sidebar.date_input("Fecha de planificacion", value=pd.Timestamp(default_date).date())
-    ).normalize()
     if not sales.empty and selected_date not in set(sales["fecha"].dropna().dt.normalize()):
         st.sidebar.warning("La fecha seleccionada no existe en venta diaria. REAL se muestra en 0.")
 
@@ -1107,6 +1142,31 @@ def main() -> None:
 
     if focus_payloads:
         st.divider()
+        if supervisor != "Todos":
+            st.caption("Con filtro de supervisor activo, el guardado global escribe solo los promotores visibles.")
+        if st.button("Guardar todos los focos visibles en Sheet", type="primary", width="stretch"):
+            try:
+                total_escritos = 0
+                errores: list[str] = []
+                for payload in focus_payloads:
+                    result = save_to_sheet(webapp_url, selected_date, str(payload["focus"]), payload["edited"])
+                    total_escritos += int(result.get("escritos", 0))
+                    errores.extend(str(item) for item in result.get("errores", []) if item)
+                if total_escritos > 0:
+                    st.success(f"Guardado completo en Sheet. Filas escritas: {total_escritos}")
+                    st.cache_data.clear()
+                else:
+                    st.warning(
+                        "Apps Script respondio, pero no escribio filas. "
+                        "Pega y redeploya la ultima version de crear_sheet_planificacion.gs."
+                    )
+                if errores:
+                    st.warning("Algunas filas no pudieron reflejarse en las celdas visuales, pero se guardaron en BD_PLANIFICACION.")
+                    with st.expander("Detalle de avisos"):
+                        st.write(errores)
+            except Exception as exc:
+                st.error(f"No pude guardar todos los focos en Sheet: {exc}")
+
         st.download_button(
             "Exportar PDF completo - 4 focos",
             data=all_focus_pdf_bytes(selected_date, focus_payloads),
