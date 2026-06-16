@@ -976,7 +976,15 @@ def apply_auxiliary_segments(df: pd.DataFrame, aux_segments: dict[str, pd.DataFr
 
 def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
+    info = SourceInfo(
+        label=path.name,
+        path=str(path),
+        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+    )
     if path.suffix.lower() in {".xlsx", ".xls"}:
+        matrix_result = parse_report_objectives_matrix(path)
+        if not matrix_result.empty:
+            return matrix_result, info
         objectives = pd.read_excel(path, dtype="string")
     else:
         objectives = read_tabular(path)
@@ -1003,12 +1011,66 @@ def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, Sou
         }
     ).dropna(subset=["OBJ VTAS"])
 
-    info = SourceInfo(
-        label=path.name,
-        path=str(path),
-        modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
-    )
     return result, info
+
+
+def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
+    source = pd.read_excel(path, sheet_name=0, header=None)
+    header_index = None
+    for index, row in source.iterrows():
+        values = row.fillna("").astype(str).tolist()
+        if any("descripcion" in clean_name(value) for value in values) and sum("-" in value for value in values) >= 2:
+            header_index = index
+            break
+    if header_index is None:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+
+    header = source.loc[header_index].fillna("").astype(str)
+    total_col = next((col for col, value in header.items() if clean_name(value) == "total"), None)
+    subtotal_col = next((col for col, value in header.items() if "subtotal" in clean_name(value)), None)
+    vendor_columns = [
+        col
+        for col, value in header.items()
+        if col >= 2 and "-" in str(value) and normalize_vendor_name(value)
+    ]
+
+    rows_by_code: dict[str, float] = {}
+    for _, row in source.loc[header_index + 1 :].iterrows():
+        code_match = re.search(r"(\d+)", str(row.iloc[0] if len(row) else ""))
+        if not code_match:
+            continue
+        code = code_match.group(1)
+        if total_col is not None:
+            value = parse_objective_cell(row.get(total_col))
+        elif subtotal_col is not None:
+            value = parse_objective_cell(row.get(subtotal_col))
+        else:
+            values = [parse_objective_cell(row.get(col)) for col in vendor_columns]
+            value = float(np.nansum(values)) if values else np.nan
+        if not pd.isna(value):
+            rows_by_code[code] = float(value)
+
+    if not rows_by_code:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+
+    total_cvza = rows_by_code.get("2218", np.nan)
+    total_ung = rows_by_code.get("19341", np.nan)
+    aguas = rows_by_code.get("18743", np.nan)
+    premium_codes = [code for code in rows_by_code if code not in {"2218", "19341", "18743"}]
+    premium = float(np.nansum([rows_by_code[code] for code in premium_codes])) if premium_codes else np.nan
+    core_value = total_cvza - premium if not pd.isna(total_cvza) and not pd.isna(premium) else np.nan
+
+    rows = [
+        {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": total_cvza},
+        {"seccion": "", "item": "TOTAL UNG", "OBJ VTAS": total_ung},
+        {"seccion": "", "item": "CZA", "OBJ VTAS": total_cvza},
+        {"seccion": "", "item": "UNG", "OBJ VTAS": total_ung},
+        {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": aguas},
+        {"seccion": "", "item": "CVZA HE", "OBJ VTAS": premium},
+        {"seccion": "", "item": "CVZA CORE + VALUE", "OBJ VTAS": core_value},
+    ]
+
+    return pd.DataFrame(rows).dropna(subset=["OBJ VTAS"])
 
 
 def normalize_vendor_name(value: object) -> str:
