@@ -141,13 +141,13 @@ def truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "y"}
 
 
-def resolve_google_drive_folder(secret_name: str, folder_name: str) -> Path | None:
+def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refresh: bool = False) -> Path | None:
     url = secret_or_env(secret_name)
     if not url:
         return None
 
     target = PROJECT_ROOT / ".cloud_data" / folder_name
-    refresh = truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
+    refresh = force_refresh or truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
     has_files = target.exists() and any(target.iterdir())
     if has_files and not refresh:
         return target
@@ -183,6 +183,13 @@ DEFAULT_DATA_DIR = (
     resolve_google_drive_folder("GOOGLE_DRIVE_PLANIFICACION_URL", "planificacion")
     or next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
 )
+
+
+def current_data_dir(force_refresh: bool = False) -> Path:
+    return (
+        resolve_google_drive_folder("GOOGLE_DRIVE_PLANIFICACION_URL", "planificacion", force_refresh=force_refresh)
+        or next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
+    )
 
 
 @dataclass(frozen=True)
@@ -1381,13 +1388,12 @@ def apply_filters(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Timestamp, dict[st
     min_date = df["fecha"].min().date()
     max_data_date = df["fecha"].max()
     max_date = max_data_date.date()
-    max_analysis_date = next_selling_day(max_data_date).date()
 
     selected_date = st.sidebar.date_input(
         "Fecha de analisis",
-        value=max_analysis_date,
+        value=max_date,
         min_value=min_date,
-        max_value=max_analysis_date,
+        max_value=max_date,
     )
     date_range = st.sidebar.date_input(
         "Rango historico",
@@ -2559,10 +2565,15 @@ def main() -> None:
 
     st.sidebar.title("Datos y filtros")
     st.sidebar.link_button("Ir al planificador", secret_or_env("SMALL_DASH_URL", SMALL_DASH_URL), width="stretch")
-    st.sidebar.caption(f"Carpeta automatica: {DEFAULT_DATA_DIR}")
+    if "force_data_refresh" not in st.session_state:
+        st.session_state["force_data_refresh"] = False
     if st.sidebar.button("Actualizar datos", width="stretch"):
+        st.session_state["force_data_refresh"] = True
         st.cache_data.clear()
         st.rerun()
+    data_dir = current_data_dir(force_refresh=bool(st.session_state.get("force_data_refresh", False)))
+    st.session_state["force_data_refresh"] = False
+    st.sidebar.caption(f"Carpeta automatica: {data_dir}")
     load_annual_comparison = st.sidebar.checkbox(
         "Cargar comparacion AA",
         value=True,
@@ -2575,7 +2586,7 @@ def main() -> None:
         if uploaded is not None:
             df, info = load_source_from_upload(uploaded.name, uploaded.getvalue())
         else:
-            latest = latest_daily_file_in_folder(DEFAULT_DATA_DIR)
+            latest = latest_daily_file_in_folder(data_dir)
             if latest is None:
                 st.warning("No encontre archivos TXT/CSV en la carpeta automatica. Use la carga manual.")
                 st.stop()
@@ -2590,7 +2601,7 @@ def main() -> None:
 
     customer_channels: pd.DataFrame | None = None
     customer_info: SourceInfo | None = None
-    customer_file = latest_customer_file_in_folder(DEFAULT_DATA_DIR)
+    customer_file = latest_customer_file_in_folder(data_dir)
     if customer_file is not None:
         try:
             customer_channels, customer_info = load_customer_channels(str(customer_file), customer_file.stat().st_mtime_ns)
@@ -2603,7 +2614,7 @@ def main() -> None:
 
     aux_segments: dict[str, pd.DataFrame] | None = None
     aux_info: SourceInfo | None = None
-    aux_file = latest_auxiliary_file_in_folder(DEFAULT_DATA_DIR)
+    aux_file = latest_auxiliary_file_in_folder(data_dir)
     if aux_file is not None:
         try:
             aux_segments, aux_info = load_auxiliary_segments(str(aux_file), aux_file.stat().st_mtime_ns)
@@ -2617,7 +2628,7 @@ def main() -> None:
 
     objectives_df = default_objectives()
     objectives_info: SourceInfo | None = None
-    objectives_file = latest_objectives_file_in_folder(DEFAULT_DATA_DIR)
+    objectives_file = latest_objectives_file_in_folder(data_dir)
     if objectives_file is not None:
         try:
             objectives_df, objectives_info = load_objectives(str(objectives_file), objectives_file.stat().st_mtime_ns)
@@ -2630,7 +2641,7 @@ def main() -> None:
     if uploaded is not None:
         st.sidebar.info("La comparacion AA automatica se omite cuando se usa carga manual.")
     elif load_annual_comparison:
-        annual_file = latest_annual_file_in_folder(DEFAULT_DATA_DIR)
+        annual_file = latest_annual_file_in_folder(data_dir)
         if annual_file is not None:
             try:
                 annual_df, annual_info = load_annual_source_from_path(str(annual_file), annual_file.stat().st_mtime_ns)
