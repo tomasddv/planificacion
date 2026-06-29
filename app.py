@@ -2066,6 +2066,43 @@ def aa_daily_report(current_df: pd.DataFrame, annual_df: pd.DataFrame) -> pd.Dat
     return report.sort_values(["fecha", "HL actual"], ascending=[False, False])
 
 
+SALES_CURVE_ORDER = ["CZA", "UNG", "MARKETPLACE", "VINO", "ADYACENCIAS"]
+SALES_CURVE_COLORS = {
+    "CZA": "#1463ff",
+    "UNG": "#12b76a",
+    "MARKETPLACE": "#f79009",
+    "VINO": "#7a5af8",
+    "ADYACENCIAS": "#f04438",
+}
+
+
+def sales_curve_group(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"CZA", "UNG", "VINO", "ADYACENCIAS"}:
+        return text
+    if "MARKETPLACE" in text:
+        return "MARKETPLACE"
+    return ""
+
+
+def daily_sales_curve_by_business(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "fecha" not in df.columns or "unidad_negocio" not in df.columns:
+        return pd.DataFrame(columns=["fecha", "grupo_venta", "hl"])
+    scoped = df.copy()
+    scoped["grupo_venta"] = scoped["unidad_negocio"].map(sales_curve_group)
+    scoped = scoped[scoped["grupo_venta"].isin(SALES_CURVE_ORDER)]
+    if scoped.empty:
+        return pd.DataFrame(columns=["fecha", "grupo_venta", "hl"])
+    grouped = scoped.groupby(["fecha", "grupo_venta"], as_index=False)["hl"].sum()
+    dates = pd.date_range(grouped["fecha"].min(), grouped["fecha"].max(), freq="D")
+    full_index = pd.MultiIndex.from_product([dates, SALES_CURVE_ORDER], names=["fecha", "grupo_venta"])
+    return (
+        grouped.set_index(["fecha", "grupo_venta"])
+        .reindex(full_index, fill_value=0.0)
+        .reset_index()
+    )
+
+
 def executive_summary_table(
     current_df: pd.DataFrame,
     annual_df: pd.DataFrame | None,
@@ -2766,8 +2803,8 @@ def main() -> None:
     )
 
     with tab_overview:
-        overview_curve = year_comparison_curve(daily, annual_daily, selected_date)
-        if overview_curve.empty or overview_curve["serie"].nunique() == 1:
+        sales_curve = daily_sales_curve_by_business(filtered)
+        if sales_curve.empty:
             line = px.line(
                 daily,
                 x="fecha",
@@ -2778,18 +2815,17 @@ def main() -> None:
             )
         else:
             line = px.line(
-                overview_curve,
-                x="fecha_comparativa",
+                sales_curve,
+                x="fecha",
                 y="hl",
-                color="serie",
+                color="grupo_venta",
                 markers=True,
-                title="HL diarios: actual vs año anterior",
-                color_discrete_map={
-                    "Venta diaria actual": "#1463ff",
-                    "Venta diaria AA": "#f79009",
-                },
+                title="HL diarios por negocio",
+                category_orders={"grupo_venta": SALES_CURVE_ORDER},
+                color_discrete_map=SALES_CURVE_COLORS,
+                labels={"grupo_venta": "Negocio"},
             )
-            line.update_xaxes(title_text="Fecha comparable")
+            line.update_xaxes(title_text="Fecha")
         line.update_yaxes(title_text="HL")
         st.plotly_chart(chart_layout(line), width="stretch")
 
