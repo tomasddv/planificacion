@@ -64,6 +64,9 @@ PROMOTER_ALIASES = {"ENZO VILLAGRA": "VILLAGRA ENZO"}
 SUPERVISOR_ALIASES = {
     "VITI ANIBAL": "ANIBAL VITI",
 }
+PROMOTER_SUPERVISOR_OVERRIDES = {
+    "FEDERICO BISS": "ISMAEL BRUNO",
+}
 
 
 def secret_or_env(name: str, default: str = "") -> str:
@@ -97,6 +100,16 @@ def normalize_promoter(value: object) -> str:
 def normalize_supervisor(value: object) -> str:
     text = clean_text(value)
     return SUPERVISOR_ALIASES.get(text, text)
+
+
+def apply_supervisor_overrides(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "promotor" not in df.columns or "supervisor" not in df.columns:
+        return df
+    result = df.copy()
+    promoter_key = result["promotor"].map(normalize_promoter)
+    for promoter, supervisor in PROMOTER_SUPERVISOR_OVERRIDES.items():
+        result.loc[promoter_key.eq(promoter), "supervisor"] = supervisor
+    return result
 
 
 def normalize_focus(value: object) -> str:
@@ -437,6 +450,7 @@ def load_sheet(sheet_url: str, selected_date_key: str = "") -> pd.DataFrame:
     result = pd.DataFrame(rows)
     if result.empty:
         return pd.DataFrame(columns=["supervisor", "foco", "promotor", "objetivo", "planificado", "celda_planificacion"])
+    result = apply_supervisor_overrides(result)
     result = result.drop_duplicates(["supervisor", "foco", "promotor"], keep="last")
     db_plan = parse_planning_db(workbook, selected_date_key)
     if not db_plan.empty:
