@@ -346,7 +346,8 @@ def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.Dat
     metrics = sales_metrics(sales, focus, selected_date)
     metrics["promotor_key"] = metrics["promotor"].map(normalize_promoter)
     work = work.merge(metrics[["promotor_key", "real", "media_real", "acum_actual", "acum_ant"]], on="promotor_key", how="left")
-    work[["real", "acum_actual", "acum_ant"]] = work[["real", "acum_actual", "acum_ant"]].fillna(0.0)
+    for column in ["real", "media_real", "acum_actual", "acum_ant"]:
+        work[column] = pd.to_numeric(work[column], errors="coerce").fillna(0.0)
 
     day_lookup = days[["supervisor", "restan"]].drop_duplicates("supervisor") if not days.empty else pd.DataFrame(columns=["supervisor", "restan"])
     work = work.merge(day_lookup, on="supervisor", how="left")
@@ -357,8 +358,9 @@ def build_focus_progress(edited: pd.DataFrame, days: pd.DataFrame, sales: pd.Dat
     )
     work["avance"] = np.where(work["planificado"] > 0, work["real"] / work["planificado"] * 100, np.nan)
     work["avance_objetivo"] = np.where(work["objetivo"] > 0, work["acum_actual"] / work["objetivo"] * 100, np.nan)
-    work["vs_media_necesaria"] = np.where(work["media_necesaria"] > 0, work["real"] / work["media_necesaria"] * 100, np.nan)
-    work["vs_media_real"] = np.where(work["media_real"] > 0, work["real"] / work["media_real"] * 100, np.nan)
+    work["media_necesaria"] = pd.to_numeric(work["media_necesaria"], errors="coerce")
+    work["vs_media_necesaria"] = np.where(work["media_necesaria"].fillna(0) > 0, work["real"] / work["media_necesaria"] * 100, np.nan)
+    work["vs_media_real"] = np.where(work["media_real"].fillna(0) > 0, work["real"] / work["media_real"] * 100, np.nan)
     return work
 
 
