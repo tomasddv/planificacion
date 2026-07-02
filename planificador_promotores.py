@@ -628,36 +628,9 @@ def render_progress_table(focus: str, progress: pd.DataFrame) -> None:
     rows.append(f"<tr class='total-row'>{''.join(total_cells)}</tr>")
 
     for supervisor, group in progress.groupby("supervisor", dropna=False):
-        supervisor_values = {
-            "PLANIFICADO": group["planificado"].sum(min_count=1),
-            "REAL": group["real"].sum(min_count=1),
-            "MEDIA NEC.": group["media_necesaria"].sum(min_count=1),
-            "MEDIA REAL": group["media_real"].sum(min_count=1),
-        }
-        supervisor_values["AVANCE"] = (
-            supervisor_values["REAL"] / supervisor_values["PLANIFICADO"] * 100
-            if supervisor_values["PLANIFICADO"]
-            else np.nan
-        )
-        supervisor_values["VS MEDIA NEC."] = (
-            supervisor_values["REAL"] / supervisor_values["MEDIA NEC."] * 100
-            if supervisor_values["MEDIA NEC."]
-            else np.nan
-        )
-        supervisor_values["VS MEDIA REAL"] = (
-            supervisor_values["REAL"] / supervisor_values["MEDIA REAL"] * 100
-            if supervisor_values["MEDIA REAL"]
-            else np.nan
-        )
         supervisor_cells = [f"<td>{supervisor}</td>"]
         for column in headers[1:]:
-            cls = pct_class(supervisor_values[column]) if column in percent_cols else ""
-            value = (
-                f"{supervisor_values[column]:.0f}%"
-                if column in percent_cols and not pd.isna(supervisor_values[column])
-                else format_number(supervisor_values[column])
-            )
-            supervisor_cells.append(f"<td class='{cls}'>{value}</td>")
+            supervisor_cells.append(f"<td>{column}</td>")
         rows.append(f"<tr class='mesa-row'>{''.join(supervisor_cells)}</tr>")
         for _, row in group.sort_values("promotor").iterrows():
             values = [
