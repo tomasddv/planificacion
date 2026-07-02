@@ -61,6 +61,9 @@ FOCUS_COLORS = {
     "AGUAS": "#06b6d4",
 }
 PROMOTER_ALIASES = {"ENZO VILLAGRA": "VILLAGRA ENZO"}
+SUPERVISOR_ALIASES = {
+    "VITI ANIBAL": "ANIBAL VITI",
+}
 
 
 def secret_or_env(name: str, default: str = "") -> str:
@@ -89,6 +92,11 @@ def normalize_promoter(value: object) -> str:
     text = clean_text(value)
     text = re.sub(r"^\d+\s+", "", text)
     return PROMOTER_ALIASES.get(text, text)
+
+
+def normalize_supervisor(value: object) -> str:
+    text = clean_text(value)
+    return SUPERVISOR_ALIASES.get(text, text)
 
 
 def normalize_focus(value: object) -> str:
@@ -415,7 +423,7 @@ def load_sheet(sheet_url: str, selected_date_key: str = "") -> pd.DataFrame:
                         break
                     rows.append(
                         {
-                            "supervisor": str(sheet_name),
+                            "supervisor": normalize_supervisor(sheet_name),
                             "foco": focus,
                             "promotor": promoter,
                             "objetivo": parse_number(raw.iat[detail_idx, objective_col]) if objective_col is not None else np.nan,
@@ -500,7 +508,7 @@ def load_sheet_days(sheet_url: str) -> pd.DataFrame:
                 days["dias_trabajados"] = parse_number(value)
             elif "RESTAN" in label:
                 days["restan"] = parse_number(value)
-        rows.append({"supervisor": str(sheet_name), **days})
+        rows.append({"supervisor": normalize_supervisor(sheet_name), **days})
     return pd.DataFrame(rows)
 
 
@@ -618,15 +626,37 @@ def render_progress_table(focus: str, progress: pd.DataFrame) -> None:
     rows.append(f"<tr class='total-row'>{''.join(total_cells)}</tr>")
 
     for supervisor, group in progress.groupby("supervisor", dropna=False):
-        supervisor_total = group["planificado"].sum()
-        supervisor_real = group["real"].sum()
-        supervisor_avance = supervisor_real / supervisor_total * 100 if supervisor_total else np.nan
-        rows.append(
-            f"<tr class='mesa-row'><td>{supervisor}</td><td>{format_number(supervisor_total)}</td>"
-            f"<td>{format_number(supervisor_real)}</td><td class='{pct_class(supervisor_avance)}'>"
-            f"{'-' if pd.isna(supervisor_avance) else f'{supervisor_avance:.0f}%'}</td>"
-            f"<td colspan='4'></td></tr>"
+        supervisor_values = {
+            "PLANIFICADO": group["planificado"].sum(min_count=1),
+            "REAL": group["real"].sum(min_count=1),
+            "MEDIA NEC.": group["media_necesaria"].sum(min_count=1),
+            "MEDIA REAL": group["media_real"].sum(min_count=1),
+        }
+        supervisor_values["AVANCE"] = (
+            supervisor_values["REAL"] / supervisor_values["PLANIFICADO"] * 100
+            if supervisor_values["PLANIFICADO"]
+            else np.nan
         )
+        supervisor_values["VS MEDIA NEC."] = (
+            supervisor_values["REAL"] / supervisor_values["MEDIA NEC."] * 100
+            if supervisor_values["MEDIA NEC."]
+            else np.nan
+        )
+        supervisor_values["VS MEDIA REAL"] = (
+            supervisor_values["REAL"] / supervisor_values["MEDIA REAL"] * 100
+            if supervisor_values["MEDIA REAL"]
+            else np.nan
+        )
+        supervisor_cells = [f"<td>{supervisor}</td>"]
+        for column in headers[1:]:
+            cls = pct_class(supervisor_values[column]) if column in percent_cols else ""
+            value = (
+                f"{supervisor_values[column]:.0f}%"
+                if column in percent_cols and not pd.isna(supervisor_values[column])
+                else format_number(supervisor_values[column])
+            )
+            supervisor_cells.append(f"<td class='{cls}'>{value}</td>")
+        rows.append(f"<tr class='mesa-row'>{''.join(supervisor_cells)}</tr>")
         for _, row in group.sort_values("promotor").iterrows():
             values = [
                 row["promotor"],
@@ -685,6 +715,9 @@ def render_progress_table(focus: str, progress: pd.DataFrame) -> None:
             background: #305caa;
             color: white;
             font-weight: 800;
+            text-align: center;
+        }}
+        table.progress-table .mesa-row td:first-child {{
             text-align: center;
         }}
         table.progress-table .good {{ background: #c6efce !important; color: #006100 !important; }}
