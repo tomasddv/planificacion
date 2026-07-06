@@ -183,7 +183,7 @@ def latest_objectives_file(folder: Path | None) -> Path | None:
         if path.is_file()
         and not path.name.startswith("~$")
         and path.suffix.lower() in {".xlsx", ".xls", ".csv", ".txt"}
-        and "OBJET" in clean_text(path.stem)
+        and any(term in clean_text(path.stem) for term in ("OBJET", "SENSIBILIZACION"))
     ]
     return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
 

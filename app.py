@@ -598,7 +598,7 @@ def latest_objectives_file_in_folder(folder: Path) -> Path | None:
         if path.is_file()
         and not path.name.startswith("~$")
         and path.suffix.lower() in CLIENT_EXTENSIONS
-        and "objet" in clean_name(path.stem)
+        and any(term in clean_name(path.stem) for term in ("objet", "sensibilizacion"))
     ]
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
