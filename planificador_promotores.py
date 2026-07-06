@@ -185,7 +185,12 @@ def latest_objectives_file(folder: Path | None) -> Path | None:
         and path.suffix.lower() in {".xlsx", ".xls", ".csv", ".txt"}
         and any(term in clean_text(path.stem) for term in ("OBJET", "SENSIBILIZACION"))
     ]
-    return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+    if not candidates:
+        return None
+    sensibilizacion = [path for path in candidates if "SENSIBILIZACION" in clean_text(path.stem)]
+    if sensibilizacion:
+        return max(sensibilizacion, key=lambda path: path.stat().st_mtime)
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def parse_objectives_file(path: Path) -> pd.DataFrame:

@@ -600,7 +600,12 @@ def latest_objectives_file_in_folder(folder: Path) -> Path | None:
         and path.suffix.lower() in CLIENT_EXTENSIONS
         and any(term in clean_name(path.stem) for term in ("objet", "sensibilizacion"))
     ]
-    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+    if not files:
+        return None
+    sensibilizacion = [path for path in files if "sensibilizacion" in clean_name(path.stem)]
+    if sensibilizacion:
+        return max(sensibilizacion, key=lambda path: path.stat().st_mtime)
+    return max(files, key=lambda path: path.stat().st_mtime)
 
 
 def latest_planner_objectives_file_in_folder(folder: Path) -> Path | None:
