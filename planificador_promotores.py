@@ -206,14 +206,26 @@ def parse_objectives_file(path: Path) -> pd.DataFrame:
                 if col >= 2 and "-" in str(value) and normalize_promoter(value)
             }
             for _, row in source.loc[header_index + 1 :].iterrows():
+                code_match = re.search(r"(\d+)", clean_text(row.iloc[0] if len(row) > 0 else ""))
+                code = code_match.group(1) if code_match else ""
                 focus = normalize_objective_focus(row.iloc[1] if len(row) > 1 else "", row.iloc[0] if len(row) > 0 else "")
                 if not focus:
                     continue
+                focus_targets = [focus]
+                if code == "16667":
+                    focus_targets = ["VOLUMEN ABOVE CORE", "TOTAL CERVEZAS"]
                 for col, promoter in vendor_columns.items():
                     objective = parse_number(row.get(col))
                     if not pd.isna(objective):
-                        rows.append({"promotor": promoter, "foco": focus, "objetivo_drive": objective})
-            return pd.DataFrame(rows, columns=["promotor", "foco", "objetivo_drive"])
+                        for focus_target in focus_targets:
+                            rows.append({"promotor": promoter, "foco": focus_target, "objetivo_drive": objective})
+            if not rows:
+                return pd.DataFrame(columns=["promotor", "foco", "objetivo_drive"])
+            return (
+                pd.DataFrame(rows, columns=["promotor", "foco", "objetivo_drive"])
+                .groupby(["promotor", "foco"], as_index=False)["objetivo_drive"]
+                .sum()
+            )
 
         table = pd.read_excel(path, dtype="string")
     else:

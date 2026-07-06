@@ -1060,12 +1060,14 @@ def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
     if not rows_by_code:
         return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
 
-    total_cvza = rows_by_code.get("2218", np.nan)
+    total_cervezas = rows_by_code.get("2218", np.nan)
+    above_core = rows_by_code.get("16667", np.nan)
+    total_cvza = np.nansum([total_cervezas, above_core])
+    if pd.isna(total_cervezas) and pd.isna(above_core):
+        total_cvza = np.nan
     total_ung = rows_by_code.get("19341", np.nan)
     aguas = rows_by_code.get("18743", np.nan)
-    premium_codes = [code for code in rows_by_code if code not in {"2218", "19341", "18743"}]
-    premium = float(np.nansum([rows_by_code[code] for code in premium_codes])) if premium_codes else np.nan
-    core_value = total_cvza - premium if not pd.isna(total_cvza) and not pd.isna(premium) else np.nan
+    core_value = total_cervezas
 
     rows = [
         {"seccion": "", "item": "TOTAL CVZA", "OBJ VTAS": total_cvza},
@@ -1073,7 +1075,7 @@ def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
         {"seccion": "", "item": "CZA", "OBJ VTAS": total_cvza},
         {"seccion": "", "item": "UNG", "OBJ VTAS": total_ung},
         {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": aguas},
-        {"seccion": "", "item": "CVZA HE", "OBJ VTAS": premium},
+        {"seccion": "", "item": "CVZA HE", "OBJ VTAS": above_core},
         {"seccion": "", "item": "CVZA CORE + VALUE", "OBJ VTAS": core_value},
     ]
 
