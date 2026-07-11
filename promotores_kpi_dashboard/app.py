@@ -487,6 +487,25 @@ def filter_sales_by_focus_purchase_range(
     return filtered
 
 
+def filter_any_purchase_range(
+    ventas_df: pd.DataFrame,
+    start_date,
+    end_date,
+    rutas_base: pd.DataFrame | None = None,
+    route: str = "Todas",
+):
+    filtered = ventas_df[(ventas_df["fecha"].ge(pd.Timestamp(start_date))) & (ventas_df["fecha"].le(pd.Timestamp(end_date)))]
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    return filtered
+
+
 def apply_promoter_filter(df: pd.DataFrame, promoter: str):
     if promoter == "Todos" or df.empty or "promotor" not in df.columns:
         return df
@@ -907,9 +926,20 @@ if view == "No compradores":
             if not closed_months:
                 st.error("No hay meses cerrados disponibles en venta anual.")
                 st.stop()
-            month_options = {month_label(period.start_time): period for period in closed_months}
-            nb_month_label = st.selectbox("Mes cerrado", list(month_options.keys()), index=0, key="nb_closed_month")
-            nb_period = month_options[nb_month_label]
+            historical_cut = st.selectbox(
+                "Corte",
+                ["Mes cerrado", "Trimestre"],
+                index=0,
+                key="nb_historical_cut",
+            )
+            if historical_cut == "Trimestre":
+                quarter_periods = closed_months[:3]
+                nb_period = tuple(reversed(quarter_periods))
+                st.caption(" + ".join(month_label(period.start_time) for period in reversed(quarter_periods)))
+            else:
+                month_options = {month_label(period.start_time): period for period in closed_months}
+                nb_month_label = st.selectbox("Mes cerrado", list(month_options.keys()), index=0, key="nb_closed_month")
+                nb_period = month_options[nb_month_label]
     with nb_cols[2]:
         nb_route = st.selectbox("Grupo ruta", route_options, index=0, key="nb_route")
     with nb_cols[3]:
@@ -918,7 +948,8 @@ if view == "No compradores":
         nb_promoter_options = promoter_options_for(promotores, nb_supervisor)
         nb_promoter = st.selectbox("Promotor", nb_promoter_options, index=0, key="nb_promoter")
     with nb_cols[5]:
-        nb_option = st.selectbox("Foco", options, index=0, key="nb_focus")
+        nb_focus_options = ["Todos"] + options
+        nb_option = st.selectbox("Foco", nb_focus_options, index=0, key="nb_focus")
     with nb_cols[6]:
         st.caption("Lista clientes de la ruta que no compraron el foco en el período seleccionado.")
 
@@ -929,9 +960,14 @@ if view == "No compradores":
         nb_label = f"Mes acumulado {nb_start.date()} a {nb_end.date()}"
     elif nb_period_type == "Mes cerrado histórico":
         nb_sales_source = annual_ventas
-        nb_start = pd.Timestamp(nb_period.start_time)
-        nb_end = pd.Timestamp(nb_period.end_time).normalize()
-        nb_label = f"Mes cerrado {month_label(nb_start)} · {annual_status}"
+        if isinstance(nb_period, tuple):
+            nb_start = pd.Timestamp(nb_period[0].start_time)
+            nb_end = pd.Timestamp(nb_period[-1].end_time).normalize()
+            nb_label = f"Trimestre {month_label(nb_start)} a {month_label(nb_end)} · {annual_status}"
+        else:
+            nb_start = pd.Timestamp(nb_period.start_time)
+            nb_end = pd.Timestamp(nb_period.end_time).normalize()
+            nb_label = f"Mes cerrado {month_label(nb_start)} · {annual_status}"
     else:
         nb_end = pd.Timestamp(nb_period)
         nb_start = nb_end.replace(day=1)
@@ -940,7 +976,9 @@ if view == "No compradores":
     nb_focus, _nb_metric = parse_kpi_option(nb_option)
     nb_rutas_base = apply_supervisor_filter(rutas_grupo, nb_supervisor)
     nb_rutas_base = apply_promoter_filter(nb_rutas_base, nb_promoter)
-    if nb_period_type == "Mes cerrado histórico":
+    if nb_option == "Todos":
+        nb_filtered = filter_any_purchase_range(nb_sales_source, nb_start, nb_end, nb_rutas_base, nb_route)
+    elif nb_period_type == "Mes cerrado histórico":
         nb_filtered = filter_sales_by_focus_purchase_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
     else:
         nb_filtered = filter_sales_by_focus_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
@@ -952,7 +990,8 @@ if view == "No compradores":
     st.caption(nb_label)
     metric_cols = st.columns(3)
     metric_cols[0].metric("Clientes en ruta", f"{route_customer_count(nb_rutas_base, nb_route):,}")
-    metric_cols[1].metric("Compradores foco", f"{nb_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
+    buyer_label = "Clientes con compra" if nb_option == "Todos" else "Compradores foco"
+    metric_cols[1].metric(buyer_label, f"{nb_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
     metric_cols[2].metric("No compradores", f"{len(nb_table):,}")
 
     nb_view = nb_table.rename(
