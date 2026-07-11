@@ -1,49 +1,50 @@
-# Tablero de Venta Diaria HL
+# Dashboard Promotores
 
-App local en Streamlit para analizar venta diaria en HL desde archivos TXT/CSV tabulados exportados del sistema.
+Dashboard Streamlit para KPIs diarios de promotores y planificacion comercial.
 
-## Como usar
+- Dos tarjetas de planificacion diaria por KPI.
+- Filtros por fecha, grupo de ruta, supervisor y promotor.
+- Conteo de clientes ruta, activaciones nuevas, restantes y cumplimiento.
+- Vista de acumulado mensual por ruta.
+- Listado de clientes no compradores por foco/KPI.
+- Cruce de nombre de fantasia desde plantilla de clientes.
 
-1. Reemplace o copie el archivo `.txt` o `.csv` en:
+## Reglas principales
 
-   `N:\Tomas\DASHBOARDS\planificacion\`
+- `CCC`: clientes unicos con compra/activacion del foco.
+- `TBD`: SKUs vendidos por cliente.
+- `Value`: solo `CERVEZAS` + marca `QUILMES 1890`.
+- Rutas agrupadas como `LUJU`, `MAVI`, `MISA`.
+- Para planificacion diaria, la ruta se asigna por el dia trabajado anterior a la fecha de venta. Si la venta cae lunes, toma sabado.
 
-2. La app toma automaticamente el archivo mas reciente de esa carpeta.
-3. Ejecute:
+## Uso local
 
-   ```powershell
-   pip install -r requirements.txt
-   streamlit run app.py
-   ```
+1. Colocar los archivos fuente en `C:\Users\triesgo\Desktop\CCC`:
+   - `RUTAS 7-26.xlsx`
+   - `AUXILIARES.xlsx`
+   - `VENTA DIARIA.txt`
+   - `*plantillaClientesAR*.xlsx` (opcional, para nombre de fantasia)
 
-4. En el tablero, pulse **Actualizar datos** cada vez que reemplace el archivo.
+2. Instalar dependencias:
 
-Si la carpeta no existe o no hay archivos validos, use la carga manual desde la barra lateral.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-## Que calcula
+3. Ejecutar:
 
-- Base normalizada con fecha, calibre, negocio, ruta, vendedor, promotor, supervisor y HL.
-- Dias habiles de lunes a sabado.
-- HL por dia, calibre, negocio, supervisor, promotor y total distribuidora.
-- Promedio, mediana, minimo, maximo, percentil 25 y percentil 75 para ventanas de 7, 14, 21 y 28 dias habiles.
-- Comparacion contra el mismo dia habil del mes anterior.
-- Comparacion contra archivo `venta anual` para columna AA, acumulado vs mismo periodo del año anterior, tendencia vs AA y curva diaria actual vs AA.
-- KPIs y visualizaciones interactivas con filtros.
+```powershell
+.\.venv\Scripts\streamlit.exe run app.py --server.address 127.0.0.1 --server.port 8503
+```
 
-## Columnas usadas
+## Deploy en Streamlit Community Cloud
 
-La app combina nombres y posiciones para tolerar encabezados repetidos:
+El repo debe apuntar a esta carpeta o tener estos archivos en la raiz de la app:
 
-- Fecha: `Descripcion Periodo` o `Cod. Periodo`, con fallback a `Periodos`.
-- Calibre: columna X, descripcion de calibre.
-- HL vendidos: columna AO, `Cantidades Totales`.
-- Negocio: columnas de unidad de negocio y su descripcion.
-- Supervisor, vendedor y promotor: columnas de vendedor y descripcion vendedor.
-- Ruta: codigo y descripcion de ruta.
+- `app.py`
+- `dashboard_data.py`
+- `requirements.txt`
+- `.streamlit/config.toml`
 
-## Notas
-
-- Los numeros con coma decimal argentina se convierten automaticamente.
-- Los domingos se excluyen del analisis.
-- El boton **Actualizar datos** limpia cache y vuelve a leer el archivo mas reciente.
-- Si existe un archivo con `anual` en el nombre dentro de la carpeta, se usa como base historica AA. Si no existe, la app deja AA en blanco y muestra el aviso correspondiente.
+Los archivos de datos no se suben al repo. La app permite indicar la carpeta local de datos desde la barra lateral para uso local.
