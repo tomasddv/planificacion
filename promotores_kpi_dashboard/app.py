@@ -33,6 +33,9 @@ DEFAULT_DRIVE_FILE_IDS = {
     "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
+DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
+    "VENTA JUNIO 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
+}
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
@@ -109,10 +112,13 @@ def cached_load_dataset(base_dir: str, signature: tuple):
 
 
 @st.cache_data(show_spinner=False)
-def cached_load_annual_sales(annual_path: str, aux_path: str, signature: tuple):
+def cached_load_historical_sales(sales_paths: tuple[str, ...], aux_path: str, signature: tuple):
     brand_map, mix_map, caliber_map = load_auxiliares(Path(aux_path))
-    ventas_anual = load_ventas(Path(annual_path), brand_map, mix_map, caliber_map)
-    return ventas_anual[~ventas_anual["vendedor"].isin(EXCLUDED_VENDORS)].copy()
+    frames = [load_ventas(Path(path), brand_map, mix_map, caliber_map) for path in sales_paths]
+    if not frames:
+        return pd.DataFrame()
+    ventas_historicas = pd.concat(frames, ignore_index=True).drop_duplicates()
+    return ventas_historicas[~ventas_historicas["vendedor"].isin(EXCLUDED_VENDORS)].copy()
 
 
 def file_signature(base_dir: str):
@@ -232,6 +238,44 @@ def resolve_annual_sales_file(force_refresh: bool = False):
             tmp.unlink()
         return (target if target.exists() else None), f"No se pudo bajar venta anual: {exc}"
     return target, "Venta anual actualizada"
+
+
+def resolve_closed_month_sales_files(force_refresh: bool = False):
+    target_dir = PROJECT_ROOT / ".cloud_data" / "promotores_historico"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    statuses = []
+    paths = []
+
+    annual_path, annual_status = resolve_annual_sales_file(force_refresh=force_refresh)
+    if annual_path is not None and annual_path.exists():
+        paths.append(annual_path)
+    statuses.append(annual_status)
+
+    try:
+        import gdown
+    except ImportError:
+        return paths, "; ".join(statuses + ["Falta instalar gdown"])
+
+    for local_name, file_id in DEFAULT_MONTHLY_CLOSED_FILE_IDS.items():
+        target = target_dir / local_name
+        if target.exists() and target.stat().st_size > 0 and not force_refresh:
+            paths.append(target)
+            statuses.append(f"{local_name}: cache")
+            continue
+        tmp = target.with_suffix(".tmp")
+        if tmp.exists():
+            tmp.unlink()
+        try:
+            gdown.download(id=file_id, output=str(tmp), quiet=True, use_cookies=False)
+            tmp.replace(target)
+            paths.append(target)
+            statuses.append(f"{local_name}: actualizado")
+        except Exception as exc:
+            if tmp.exists():
+                tmp.unlink()
+            statuses.append(f"{local_name}: error {exc}")
+
+    return paths, "; ".join(statuses)
 
 
 def kpi_options():
@@ -838,18 +882,19 @@ if view == "No compradores":
         elif nb_period_type == "Acumulado a fecha":
             nb_period = st.selectbox("Período", fechas, index=len(fechas) - 1, key="nb_period_date")
         else:
-            with st.spinner("Preparando venta anual..."):
-                annual_source, annual_status = resolve_annual_sales_file(force_refresh=False)
-            if annual_source is None:
+            with st.spinner("Preparando ventas historicas..."):
+                historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=False)
+            if not historical_sources:
                 st.error(annual_status)
                 st.stop()
-            annual_ventas = cached_load_annual_sales(
-                str(annual_source),
+            historical_signature = tuple(
+                (str(path), path.stat().st_mtime, path.stat().st_size) for path in historical_sources
+            )
+            annual_ventas = cached_load_historical_sales(
+                tuple(str(path) for path in historical_sources),
                 str(dataset["sources"]["auxiliares"]),
                 (
-                    str(annual_source),
-                    annual_source.stat().st_mtime,
-                    annual_source.stat().st_size,
+                    historical_signature,
                     str(dataset["sources"]["auxiliares"]),
                     Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
                 ),
