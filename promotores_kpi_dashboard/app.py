@@ -26,7 +26,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "20260519122321plantillaClientesAR.xlsx": "1GuRrGKlb7SLjI9h81XssZTpWzgPUrpRb",
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
-    "ventadiaria.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+    "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
