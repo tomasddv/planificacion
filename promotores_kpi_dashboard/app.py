@@ -1,4 +1,8 @@
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import shutil
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +21,14 @@ from dashboard_data import (
 
 
 DEFAULT_DATA_DIR = r"C:\Users\triesgo\Desktop\CCC"
+DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
+DEFAULT_DRIVE_FILE_IDS = {
+    "20260519122321plantillaClientesAR.xlsx": "1GuRrGKlb7SLjI9h81XssZTpWzgPUrpRb",
+    "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
+    "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
+    "ventadiaria.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+}
+PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 
@@ -77,22 +89,97 @@ def cached_load_dataset(base_dir: str, signature: tuple):
 
 def file_signature(base_dir: str):
     base = Path(base_dir)
-    files = ["RUTAS 7-26.xlsx", "AUXILIARES.xlsx", "VENTA DIARIA.txt"]
     signature = []
-    for name in files:
-        path = base / name
-        signature.append((name, path.stat().st_mtime if path.exists() else None, path.stat().st_size if path.exists() else None))
-    clientes_files = sorted(base.glob("*plantillaClientesAR*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    clientes_path = clientes_files[0] if clientes_files else None
-    signature.append(
-        (
-            "clientes",
-            str(clientes_path) if clientes_path else None,
-            clientes_path.stat().st_mtime if clientes_path else None,
-            clientes_path.stat().st_size if clientes_path else None,
-        )
-    )
+    if not base.exists():
+        return (str(base), None)
+    suffixes = {".xlsx", ".xls", ".txt", ".csv"}
+    for path in sorted(p for p in base.rglob("*") if p.is_file() and p.suffix.lower() in suffixes):
+        name = path.name.upper()
+        if any(term in name for term in ["RUTAS", "AUXILIARES", "VENTA", "PLANTILLACLIENTESAR"]):
+            signature.append((str(path), path.stat().st_mtime, path.stat().st_size))
     return tuple(signature)
+
+
+def secret_or_env(name: str, default: str = ""):
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+def is_drive_url(value: str):
+    value = str(value or "").strip().lower()
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: bool = False):
+    drive_url = drive_url or secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
+    if not drive_url:
+        return None, "Sin URL de Drive configurada"
+
+    cache_root = PROJECT_ROOT / ".cloud_data"
+    target = cache_root / "promotores"
+    if target.exists() and any(target.rglob("*")) and not force_refresh:
+        return target, "Drive cache"
+
+    try:
+        import gdown
+    except ImportError:
+        return (target if target.exists() else None), "Falta instalar gdown"
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    tmp = cache_root / f"promotores_tmp_{int(time.time())}"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    def wanted_drive_file(name: str):
+        normalized = name.upper().replace("_", " ").replace("-", " ")
+        compact = normalized.replace(" ", "")
+        return (
+            "RUTAS" in normalized
+            or "AUXILIARES" in normalized
+            or ("VENTA" in normalized and "DIARIA" in compact and "ANUAL" not in normalized)
+            or "PLANTILLACLIENTESAR" in compact
+        )
+
+    try:
+        if drive_url.strip().rstrip("/") == DEFAULT_DRIVE_URL.rstrip("/"):
+            def download_default_file(item):
+                local_name, file_id = item
+                gdown.download(id=file_id, output=str(tmp / local_name), quiet=True, use_cookies=False)
+                return local_name
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(download_default_file, item) for item in DEFAULT_DRIVE_FILE_IDS.items()]
+                for future in as_completed(futures):
+                    future.result()
+        else:
+            drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
+            selected_files = [file for file in (drive_files or []) if wanted_drive_file(str(file.path))]
+            def download_selected_file(file):
+                local_name = Path(str(file.path)).name
+                gdown.download(id=file.id, output=str(tmp / local_name), quiet=True, use_cookies=False)
+                return local_name
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(download_selected_file, file) for file in selected_files]
+                for future in as_completed(futures):
+                    future.result()
+    except Exception as exc:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (target if target.exists() else None), f"No se pudo actualizar Drive: {exc}"
+
+    if not any(tmp.rglob("*")):
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (target if target.exists() else None), "Drive no devolvio archivos utiles"
+
+    if target.exists():
+        shutil.rmtree(target)
+    tmp.rename(target)
+    return target, "Drive actualizado"
 
 
 def kpi_options():
@@ -322,11 +409,22 @@ st.title("Dashboard Promotores")
 with st.sidebar:
     st.header("Datos")
     st.link_button("Ir al planificador de promotores", PLANIFICADOR_PROMOTORES_URL, use_container_width=True)
-    data_dir = st.text_input("Carpeta de archivos", DEFAULT_DATA_DIR)
+    force_drive_refresh = bool(st.session_state.pop("force_drive_refresh", False))
+    default_source = secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
+    source_input = st.text_input("Carpeta local o URL de Drive", default_source)
     refresh = st.button("Tomar actualizacion de archivos", use_container_width=True, type="primary")
     if refresh:
+        st.session_state["force_drive_refresh"] = True
         st.cache_data.clear()
         st.rerun()
+    if is_drive_url(source_input):
+        with st.spinner("Leyendo archivos desde Drive..."):
+            drive_dir, drive_status = resolve_google_drive_folder(source_input, force_refresh=force_drive_refresh)
+        data_dir = str(drive_dir) if drive_dir else DEFAULT_DATA_DIR
+    else:
+        drive_status = "Carpeta local"
+        data_dir = source_input or DEFAULT_DATA_DIR
+    st.caption(f"Fuente: {drive_status}")
 
 try:
     dataset = cached_load_dataset(data_dir, file_signature(data_dir))
