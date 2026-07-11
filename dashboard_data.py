@@ -177,8 +177,29 @@ def load_rutas(path: Path):
 
 
 def find_clientes_path(base: Path):
-    matches = sorted(base.glob("*plantillaClientesAR*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    matches = sorted(base.rglob("*plantillaClientesAR*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0] if matches else None
+
+
+def normalized_name(path: Path):
+    text = clean_text(path.stem).upper()
+    text = text.replace("_", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", text)
+
+
+def find_data_file(base: Path, required_terms: tuple[str, ...], suffixes: tuple[str, ...], excluded_terms: tuple[str, ...] = ()):
+    if not base.exists():
+        return None
+    suffixes = tuple(s.lower() for s in suffixes)
+    candidates = []
+    for path in base.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        name = normalized_name(path)
+        if all(term.upper() in name for term in required_terms) and not any(term.upper() in name for term in excluded_terms):
+            candidates.append(path)
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
 
 
 def load_clientes(path: Path | None):
@@ -313,13 +334,19 @@ def apply_route_flag(ventas: pd.DataFrame, rutas_dia: pd.DataFrame):
 
 def load_dataset(base_dir: str):
     base = Path(base_dir)
-    rutas_path = base / "RUTAS 7-26.xlsx"
-    aux_path = base / "AUXILIARES.xlsx"
-    ventas_path = base / "VENTA DIARIA.txt"
+    rutas_path = find_data_file(base, ("RUTAS",), (".xlsx", ".xls"))
+    aux_path = find_data_file(base, ("AUXILIARES",), (".xlsx", ".xls"))
+    ventas_path = find_data_file(base, ("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL",))
     clientes_path = find_clientes_path(base)
-    missing = [str(path) for path in [rutas_path, aux_path, ventas_path] if not path.exists()]
+    missing = []
+    if rutas_path is None:
+        missing.append("RUTAS *.xlsx")
+    if aux_path is None:
+        missing.append("AUXILIARES *.xlsx")
+    if ventas_path is None:
+        missing.append("VENTA DIARIA *.txt")
     if missing:
-        raise FileNotFoundError("No se encontraron archivos: " + ", ".join(missing))
+        raise FileNotFoundError("No se encontraron archivos en " + str(base) + ": " + ", ".join(missing))
 
     brand_map, mix_map, caliber_map = load_auxiliares(aux_path)
     rutas = load_rutas(rutas_path)
