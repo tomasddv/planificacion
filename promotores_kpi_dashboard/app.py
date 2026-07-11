@@ -1,8 +1,10 @@
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import os
 import shutil
 import time
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +38,8 @@ DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
     "VENTA JUNIO 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
 }
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
@@ -141,6 +145,44 @@ def secret_or_env(name: str, default: str = ""):
     except Exception:
         pass
     return os.environ.get(name, default)
+
+
+def planner_sheet_url():
+    return secret_or_env("PLANNER_GOOGLE_SHEET_URL", DEFAULT_SHEET_URL)
+
+
+def planner_webapp_url():
+    return secret_or_env("PLANNER_WEBAPP_URL", DEFAULT_WEBAPP_URL)
+
+
+def google_sheet_export_url(raw_url: str):
+    import re
+
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", raw_url or "")
+    if match:
+        return f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=xlsx"
+    return raw_url
+
+
+@st.cache_data(show_spinner=False, ttl=120)
+def load_plan_from_sheet(sheet_url: str):
+    if not sheet_url:
+        return pd.DataFrame(columns=["fecha", "ruta", "kpi", "promotor", "planificado"])
+    try:
+        workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, dtype=str)
+    except Exception:
+        return pd.DataFrame(columns=["fecha", "ruta", "kpi", "promotor", "planificado"])
+    sheet = workbook.get("BD_KPI_PROMOTORES")
+    if sheet is None or sheet.empty:
+        return pd.DataFrame(columns=["fecha", "ruta", "kpi", "promotor", "planificado"])
+    sheet.columns = [str(col).strip().lower() for col in sheet.columns]
+    required = ["fecha", "ruta", "kpi", "promotor", "planificado"]
+    if not set(required).issubset(sheet.columns):
+        return pd.DataFrame(columns=required)
+    plan = sheet[required].copy()
+    plan["fecha"] = pd.to_datetime(plan["fecha"], errors="coerce").dt.strftime("%Y-%m-%d").fillna(plan["fecha"].astype(str))
+    plan["planificado"] = pd.to_numeric(plan["planificado"], errors="coerce").fillna(0)
+    return plan.dropna(subset=["fecha", "ruta", "kpi", "promotor"])
 
 
 def is_drive_url(value: str):
@@ -321,14 +363,21 @@ def card_html(title: str, option: str, value: int, subtitle: str):
 
 
 def load_plan():
-    if not PLAN_FILE.exists():
+    frames = []
+    if PLAN_FILE.exists():
+        frames.append(pd.read_csv(PLAN_FILE, dtype={"fecha": str, "kpi": str, "promotor": str}))
+    sheet_plan = load_plan_from_sheet(planner_sheet_url())
+    if not sheet_plan.empty:
+        frames.append(sheet_plan)
+    if not frames:
         return pd.DataFrame(columns=["fecha", "ruta", "kpi", "promotor", "planificado"])
-    plan = pd.read_csv(PLAN_FILE, dtype={"fecha": str, "kpi": str, "promotor": str})
+    plan = pd.concat(frames, ignore_index=True)
     if "ruta" not in plan.columns:
         plan["ruta"] = "Todas"
     if "planificado" not in plan.columns:
         plan["planificado"] = 0
     plan["planificado"] = pd.to_numeric(plan["planificado"], errors="coerce").fillna(0)
+    plan = plan.drop_duplicates(["fecha", "ruta", "kpi", "promotor"], keep="last")
     return plan[["fecha", "ruta", "kpi", "promotor", "planificado"]]
 
 
@@ -336,6 +385,41 @@ def save_plan(plan: pd.DataFrame):
     clean = plan.copy()
     clean["planificado"] = pd.to_numeric(clean["planificado"], errors="coerce").fillna(0)
     clean.to_csv(PLAN_FILE, index=False)
+
+
+def save_kpi_plan_to_sheet(option: str, fecha, route: str, edited: pd.DataFrame, tarjeta: str):
+    url = planner_webapp_url()
+    if not url:
+        return None
+    def number(value):
+        parsed = pd.to_numeric(value, errors="coerce")
+        return 0.0 if pd.isna(parsed) else float(parsed)
+
+    rows = []
+    for _, row in edited.iterrows():
+        rows.append(
+            {
+                "fecha": str(fecha),
+                "ruta": route,
+                "kpi": option,
+                "tarjeta": tarjeta,
+                "promotor": row.get("promotor", ""),
+                "clientes_ruta": number(row.get("clientes ruta")),
+                "restantes": number(row.get("restantes")),
+                "planificado": number(row.get("planificado")),
+                "real": number(row.get("real")),
+                "cumplimiento": number(row.get("cumplimiento")),
+            }
+        )
+    payload = {"tipo": "kpi_promotores", "rows": rows}
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def planning_table(summary: pd.DataFrame, option: str, metric: str, fecha, route: str):
@@ -516,6 +600,19 @@ def apply_supervisor_filter(df: pd.DataFrame, supervisor: str):
     if supervisor == "Todos" or df.empty or "supervisor" not in df.columns:
         return df
     return df[df["supervisor"].eq(supervisor)].copy()
+
+
+def focus_requires_alcohol_license(option: str):
+    if option == "Todos":
+        return False
+    focus, _metric = parse_kpi_option(option)
+    return focus != "Nabs"
+
+
+def apply_alcohol_license_filter(df: pd.DataFrame, option: str):
+    if df.empty or not focus_requires_alcohol_license(option) or "licencia_alcohol" not in df.columns:
+        return df
+    return df[df["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
 
 
 def promoter_options_for(promotores_df: pd.DataFrame, supervisor: str):
@@ -752,7 +849,14 @@ if view == "Planificación diaria":
     edited_plan_1 = recalculate_performance(edited_plan_1)
     if st.button("Guardar planificacion tarjeta 1", use_container_width=True):
         update_plan(card_1_option, plan_period, route, edited_plan_1)
-        st.toast("Planificacion de tarjeta 1 guardada.")
+        result = save_kpi_plan_to_sheet(card_1_option, plan_period, route, edited_plan_1, "Tarjeta 1")
+        if result and not result.get("ok", False):
+            st.warning(f"Guardado local OK, pero Sheet respondio error: {result.get('error')}")
+        elif result:
+            st.toast(f"Planificacion de tarjeta 1 guardada en Sheet. Filas: {result.get('escritos', 0)}")
+        else:
+            st.toast("Planificacion de tarjeta 1 guardada localmente.")
+        st.cache_data.clear()
         st.rerun()
 
     st.markdown(
@@ -778,7 +882,14 @@ if view == "Planificación diaria":
     edited_plan_2 = recalculate_performance(edited_plan_2)
     if st.button("Guardar planificacion tarjeta 2", use_container_width=True):
         update_plan(card_2_option, plan_period, route, edited_plan_2)
-        st.toast("Planificacion de tarjeta 2 guardada.")
+        result = save_kpi_plan_to_sheet(card_2_option, plan_period, route, edited_plan_2, "Tarjeta 2")
+        if result and not result.get("ok", False):
+            st.warning(f"Guardado local OK, pero Sheet respondio error: {result.get('error')}")
+        elif result:
+            st.toast(f"Planificacion de tarjeta 2 guardada en Sheet. Filas: {result.get('escritos', 0)}")
+        else:
+            st.toast("Planificacion de tarjeta 2 guardada localmente.")
+        st.cache_data.clear()
         st.rerun()
 
     focus = focus_1
@@ -976,6 +1087,7 @@ if view == "No compradores":
     nb_focus, _nb_metric = parse_kpi_option(nb_option)
     nb_rutas_base = apply_supervisor_filter(rutas_grupo, nb_supervisor)
     nb_rutas_base = apply_promoter_filter(nb_rutas_base, nb_promoter)
+    nb_rutas_base = apply_alcohol_license_filter(nb_rutas_base, nb_option)
     if nb_option == "Todos":
         nb_filtered = filter_any_purchase_range(nb_sales_source, nb_start, nb_end, nb_rutas_base, nb_route)
     elif nb_period_type == "Mes cerrado histórico":
@@ -1006,6 +1118,12 @@ if view == "No compradores":
             "razon_social": "Razón Social",
         }
     )
+    if "Nombre Fantasía" in nb_view.columns and "Razón Social" in nb_view.columns:
+        nb_view["Nombre Fantasía"] = nb_view["Nombre Fantasía"].fillna("")
+        nb_view["Nombre Fantasía"] = nb_view["Nombre Fantasía"].where(
+            nb_view["Nombre Fantasía"].ne(""),
+            nb_view["Razón Social"],
+        )
     st.dataframe(nb_view, use_container_width=True, hide_index=True)
 
 with st.expander("Fuentes cargadas"):

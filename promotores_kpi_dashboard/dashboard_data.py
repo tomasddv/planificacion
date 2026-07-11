@@ -203,16 +203,18 @@ def find_data_file(base: Path, required_terms: tuple[str, ...], suffixes: tuple[
 
 
 def load_clientes(path: Path | None):
-    columns = ["cliente", "nombre_fantasia"]
+    columns = ["cliente", "nombre_fantasia", "licencia_alcohol"]
     if path is None or not path.exists():
         return pd.DataFrame(columns=columns)
     clientes = pd.read_excel(path, sheet_name="Clientes", header=1, dtype=str)
     if "Cliente" not in clientes.columns or "Nombre de fantasia" not in clientes.columns:
         return pd.DataFrame(columns=columns)
+    licencia_col = "Licencia alcohol" if "Licencia alcohol" in clientes.columns else None
     df = pd.DataFrame(
         {
             "cliente": clientes["Cliente"].map(clean_code),
             "nombre_fantasia": clientes["Nombre de fantasia"].map(clean_text),
+            "licencia_alcohol": clientes[licencia_col].map(clean_text).str.upper() if licencia_col else "",
         }
     )
     df = df[df["cliente"].ne("") & df["cliente"].ne("ENTERO")]
@@ -275,6 +277,7 @@ def build_route_days(rutas: pd.DataFrame, fechas: list[pd.Timestamp], promotores
                     "cliente": row["cliente"],
                     "razon_social": row["razon_social"],
                     "nombre_fantasia": row.get("nombre_fantasia", ""),
+                    "licencia_alcohol": row.get("licencia_alcohol", ""),
                     "dia": DAY_COLS[fecha.weekday()],
                     "grupo_ruta": DAY_GROUPS.get(DAY_COLS[fecha.weekday()], "OTROS"),
                 }
@@ -300,6 +303,7 @@ def build_route_groups(rutas: pd.DataFrame, promotores: pd.DataFrame):
                     "cliente": row["cliente"],
                     "razon_social": row["razon_social"],
                     "nombre_fantasia": row.get("nombre_fantasia", ""),
+                    "licencia_alcohol": row.get("licencia_alcohol", ""),
                     "dia": day_label,
                     "grupo_ruta": DAY_GROUPS.get(day_label, "OTROS"),
                 }
@@ -314,6 +318,7 @@ def build_route_groups(rutas: pd.DataFrame, promotores: pd.DataFrame):
                 "cliente",
                 "razon_social",
                 "nombre_fantasia",
+                "licencia_alcohol",
                 "dia",
                 "grupo_ruta",
             ]
@@ -355,8 +360,10 @@ def load_dataset(base_dir: str):
     if not clientes.empty:
         rutas = rutas.merge(clientes, on="cliente", how="left")
         rutas["nombre_fantasia"] = rutas["nombre_fantasia"].fillna("")
+        rutas["licencia_alcohol"] = rutas["licencia_alcohol"].fillna("")
     else:
         rutas["nombre_fantasia"] = ""
+        rutas["licencia_alcohol"] = ""
     ventas = load_ventas(ventas_path, brand_map, mix_map, caliber_map)
     if ventas_anual_path is not None and ventas_anual_path.exists():
         ventas_anual = load_ventas(ventas_anual_path, brand_map, mix_map, caliber_map)
