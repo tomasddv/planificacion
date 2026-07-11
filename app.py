@@ -1,4 +1,5 @@
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import shutil
 import time
@@ -21,6 +22,12 @@ from dashboard_data import (
 
 DEFAULT_DATA_DIR = r"C:\Users\triesgo\Desktop\CCC"
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
+DEFAULT_DRIVE_FILE_IDS = {
+    "20260519122321plantillaClientesAR.xlsx": "1GuRrGKlb7SLjI9h81XssZTpWzgPUrpRb",
+    "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
+    "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
+    "ventadiaria.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+}
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
@@ -139,11 +146,28 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
         )
 
     try:
-        drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
-        selected_files = [file for file in (drive_files or []) if wanted_drive_file(str(file.path))]
-        for file in selected_files:
-            local_name = Path(str(file.path)).name
-            gdown.download(id=file.id, output=str(tmp / local_name), quiet=True, use_cookies=False)
+        if drive_url.strip().rstrip("/") == DEFAULT_DRIVE_URL.rstrip("/"):
+            def download_default_file(item):
+                local_name, file_id = item
+                gdown.download(id=file_id, output=str(tmp / local_name), quiet=True, use_cookies=False)
+                return local_name
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(download_default_file, item) for item in DEFAULT_DRIVE_FILE_IDS.items()]
+                for future in as_completed(futures):
+                    future.result()
+        else:
+            drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
+            selected_files = [file for file in (drive_files or []) if wanted_drive_file(str(file.path))]
+            def download_selected_file(file):
+                local_name = Path(str(file.path)).name
+                gdown.download(id=file.id, output=str(tmp / local_name), quiet=True, use_cookies=False)
+                return local_name
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [executor.submit(download_selected_file, file) for file in selected_files]
+                for future in as_completed(futures):
+                    future.result()
     except Exception as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         return (target if target.exists() else None), f"No se pudo actualizar Drive: {exc}"
