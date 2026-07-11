@@ -1,3 +1,8 @@
-streamlit>=1.36
-pandas>=2.0
+streamlit>=1.58
+pandas>=2.2,<3.0
+numpy>=1.26
+plotly>=5.22
+holidays>=0.70
 openpyxl>=3.1
+reportlab>=4.2
+gdown>=5.2
