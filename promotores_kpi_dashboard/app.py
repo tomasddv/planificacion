@@ -11,10 +11,14 @@ import streamlit as st
 from dashboard_data import (
     DAY_COLS,
     DAY_GROUPS,
+    EXCLUDED_VENDORS,
     KPI_FOCUSES,
     filter_sales_by_focus,
     filter_sales_by_focus_range,
+    focus_sales,
+    load_auxiliares,
     load_dataset,
+    load_ventas,
     summarize,
     trend_by_focus,
 )
@@ -28,6 +32,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
+DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
@@ -101,6 +106,13 @@ st.markdown(
 @st.cache_data(show_spinner=False)
 def cached_load_dataset(base_dir: str, signature: tuple):
     return load_dataset(base_dir)
+
+
+@st.cache_data(show_spinner=False)
+def cached_load_annual_sales(annual_path: str, aux_path: str, signature: tuple):
+    brand_map, mix_map, caliber_map = load_auxiliares(Path(aux_path))
+    ventas_anual = load_ventas(Path(annual_path), brand_map, mix_map, caliber_map)
+    return ventas_anual[~ventas_anual["vendedor"].isin(EXCLUDED_VENDORS)].copy()
 
 
 def file_signature(base_dir: str):
@@ -196,6 +208,30 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
         shutil.rmtree(target)
     tmp.rename(target)
     return target, "Drive actualizado"
+
+
+def resolve_annual_sales_file(force_refresh: bool = False):
+    target = PROJECT_ROOT / ".cloud_data" / "promotores_historico" / "VENTA ANUAL.txt"
+    if target.exists() and target.stat().st_size > 0 and not force_refresh:
+        return target, "Venta anual cache"
+
+    try:
+        import gdown
+    except ImportError:
+        return (target if target.exists() else None), "Falta instalar gdown"
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    try:
+        gdown.download(id=DEFAULT_ANNUAL_SALES_FILE_ID, output=str(tmp), quiet=True, use_cookies=False)
+        tmp.replace(target)
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        return (target if target.exists() else None), f"No se pudo bajar venta anual: {exc}"
+    return target, "Venta anual actualizada"
 
 
 def kpi_options():
@@ -386,6 +422,27 @@ def apply_accumulated_remaining(daily_summary: pd.DataFrame, accumulated_summary
     return summary.drop(columns=["clientes_restantes_acum"])
 
 
+def filter_sales_by_focus_purchase_range(
+    ventas_df: pd.DataFrame,
+    start_date,
+    end_date,
+    focus: str,
+    rutas_base: pd.DataFrame | None = None,
+    route: str = "Todas",
+):
+    filtered = focus_sales(ventas_df, focus)
+    filtered = filtered[(filtered["fecha"].ge(pd.Timestamp(start_date))) & (filtered["fecha"].le(pd.Timestamp(end_date)))]
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    return filtered
+
+
 def apply_promoter_filter(df: pd.DataFrame, promoter: str):
     if promoter == "Todos" or df.empty or "promotor" not in df.columns:
         return df
@@ -418,6 +475,25 @@ def previous_day_route_group(fecha):
         previous_day = previous_day - timedelta(days=1)
     day_label = DAY_COLS[pd.Timestamp(previous_day).weekday()]
     return DAY_GROUPS.get(day_label, "Todas"), day_label, previous_day
+
+
+def month_label(period):
+    fecha = pd.Timestamp(period)
+    months = {
+        1: "Enero",
+        2: "Febrero",
+        3: "Marzo",
+        4: "Abril",
+        5: "Mayo",
+        6: "Junio",
+        7: "Julio",
+        8: "Agosto",
+        9: "Septiembre",
+        10: "Octubre",
+        11: "Noviembre",
+        12: "Diciembre",
+    }
+    return f"{months[int(fecha.month)]} {int(fecha.year)}"
 
 
 st.title("Dashboard Promotores")
@@ -744,26 +820,73 @@ if view == "Planificación diaria":
 
 if view == "No compradores":
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
-    nonbuyer_date_options = ["Mes acumulado"] + fechas
-    nb_cols = st.columns([1, 1.1, 1.3, 1.4, 1.6, 1.6])
+    nb_cols = st.columns([1.35, 1.35, 1.05, 1.25, 1.35, 1.5, 1.5])
     with nb_cols[0]:
-        nb_period = st.selectbox("Período", nonbuyer_date_options, index=0, key="nb_period")
+        nb_period_type = st.selectbox(
+            "Tipo período",
+            ["Mes acumulado actual", "Acumulado a fecha", "Mes cerrado histórico"],
+            index=0,
+            key="nb_period_type",
+        )
     with nb_cols[1]:
-        nb_route = st.selectbox("Grupo ruta", route_options, index=0, key="nb_route")
+        nb_period = "Mes acumulado"
+        annual_status = ""
+        annual_source = None
+        annual_ventas = None
+        if nb_period_type == "Mes acumulado actual":
+            st.text_input("Período", "Mes acumulado", disabled=True, key="nb_period_current_label")
+        elif nb_period_type == "Acumulado a fecha":
+            nb_period = st.selectbox("Período", fechas, index=len(fechas) - 1, key="nb_period_date")
+        else:
+            with st.spinner("Preparando venta anual..."):
+                annual_source, annual_status = resolve_annual_sales_file(force_refresh=False)
+            if annual_source is None:
+                st.error(annual_status)
+                st.stop()
+            annual_ventas = cached_load_annual_sales(
+                str(annual_source),
+                str(dataset["sources"]["auxiliares"]),
+                (
+                    str(annual_source),
+                    annual_source.stat().st_mtime,
+                    annual_source.stat().st_size,
+                    str(dataset["sources"]["auxiliares"]),
+                    Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
+                ),
+            )
+            current_month = pd.Timestamp(max(fechas)).to_period("M")
+            closed_months = sorted(
+                [period for period in annual_ventas["fecha"].dropna().dt.to_period("M").unique() if period < current_month],
+                reverse=True,
+            )
+            if not closed_months:
+                st.error("No hay meses cerrados disponibles en venta anual.")
+                st.stop()
+            month_options = {month_label(period.start_time): period for period in closed_months}
+            nb_month_label = st.selectbox("Mes cerrado", list(month_options.keys()), index=0, key="nb_closed_month")
+            nb_period = month_options[nb_month_label]
     with nb_cols[2]:
-        nb_supervisor = st.selectbox("Supervisor", supervisor_options, index=0, key="nb_supervisor")
+        nb_route = st.selectbox("Grupo ruta", route_options, index=0, key="nb_route")
     with nb_cols[3]:
+        nb_supervisor = st.selectbox("Supervisor", supervisor_options, index=0, key="nb_supervisor")
+    with nb_cols[4]:
         nb_promoter_options = promoter_options_for(promotores, nb_supervisor)
         nb_promoter = st.selectbox("Promotor", nb_promoter_options, index=0, key="nb_promoter")
-    with nb_cols[4]:
-        nb_option = st.selectbox("Foco", options, index=0, key="nb_focus")
     with nb_cols[5]:
+        nb_option = st.selectbox("Foco", options, index=0, key="nb_focus")
+    with nb_cols[6]:
         st.caption("Lista clientes de la ruta que no compraron el foco en el período seleccionado.")
 
-    if nb_period == "Mes acumulado":
+    nb_sales_source = ventas
+    if nb_period_type == "Mes acumulado actual":
         nb_end = pd.Timestamp(max(fechas))
         nb_start = nb_end.replace(day=1)
         nb_label = f"Mes acumulado {nb_start.date()} a {nb_end.date()}"
+    elif nb_period_type == "Mes cerrado histórico":
+        nb_sales_source = annual_ventas
+        nb_start = pd.Timestamp(nb_period.start_time)
+        nb_end = pd.Timestamp(nb_period.end_time).normalize()
+        nb_label = f"Mes cerrado {month_label(nb_start)} · {annual_status}"
     else:
         nb_end = pd.Timestamp(nb_period)
         nb_start = nb_end.replace(day=1)
@@ -772,7 +895,10 @@ if view == "No compradores":
     nb_focus, _nb_metric = parse_kpi_option(nb_option)
     nb_rutas_base = apply_supervisor_filter(rutas_grupo, nb_supervisor)
     nb_rutas_base = apply_promoter_filter(nb_rutas_base, nb_promoter)
-    nb_filtered = filter_sales_by_focus_range(ventas, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
+    if nb_period_type == "Mes cerrado histórico":
+        nb_filtered = filter_sales_by_focus_purchase_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
+    else:
+        nb_filtered = filter_sales_by_focus_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
     nb_filtered = apply_supervisor_filter(nb_filtered, nb_supervisor)
     nb_filtered = apply_promoter_filter(nb_filtered, nb_promoter)
     nb_table = non_buyer_clients(nb_filtered, nb_rutas_base, nb_route)
