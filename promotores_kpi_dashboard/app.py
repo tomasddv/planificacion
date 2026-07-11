@@ -42,7 +42,23 @@ st.markdown(
         background: #FFFFFF;
     }
     .block-container { padding-top: 1.4rem; }
-    h1, h2, h3, p, label, span, div { color: #111827; }
+    h1, h2, h3, p, label { color: #111827; }
+    button, button p, button span,
+    a[data-testid="stBaseLinkButton"], a[data-testid="stBaseLinkButton"] p, a[data-testid="stBaseLinkButton"] span {
+        color: #FFFFFF !important;
+    }
+    [data-baseweb="tooltip"], [data-baseweb="tooltip"] * {
+        color: #FFFFFF !important;
+        background-color: #111827 !important;
+    }
+    [data-testid="stTooltipContent"], [data-testid="stTooltipContent"] * {
+        color: #FFFFFF !important;
+        background-color: #111827 !important;
+    }
+    div[data-testid="stDataFrame"] button,
+    div[data-testid="stDataFrame"] button * {
+        color: #FFFFFF !important;
+    }
     [data-testid="stMetricValue"] { color: #111827; font-size: 2rem; }
     [data-testid="stMetricLabel"] { color: #111827; }
     div[data-testid="stDataFrame"] { border: 1px solid #D1D5DB; border-radius: 6px; }
