@@ -110,19 +110,19 @@ DEFAULT_OBJECTIVES_ROWS = [
     {"seccion": "", "item": "AGUAS ECO", "OBJ VTAS": 416.0},
 ]
 PROMOTER_MESA_MAP = {
-    "NICASTRO LUCAS": "ismael bruno",
-    "SIRI MARTIN": "ismael bruno",
-    "MATIAS GARCIA": "ismael bruno",
-    "GASTON FABRE": "ismael bruno",
-    "NICOLAS POCHETINO": "ismael bruno",
-    "VILLAGRA ENZO": "ismael bruno",
-    "FEDERICO BISS": "anibal viti",
-    "PABLO ALVAREZ": "casco hernan",
-    "ALEXANDER ROJAS": "casco hernan",
-    "FERNANDO FIELG": "casco hernan",
-    "JUAN MANUEL GIMENEZ": "casco hernan",
-    "MENDEZ CARLOS": "casco hernan",
-    "MARIANO HERRERA": "casco hernan",
+    "NICASTRO LUCAS": "ISMAEL BRUNO",
+    "SIRI MARTIN": "ISMAEL BRUNO",
+    "MATIAS GARCIA": "ISMAEL BRUNO",
+    "GASTON FABRE": "ISMAEL BRUNO",
+    "NICOLAS POCHETINO": "ISMAEL BRUNO",
+    "VILLAGRA ENZO": "ISMAEL BRUNO",
+    "FEDERICO BISS": "ISMAEL BRUNO",
+    "PABLO ALVAREZ": "CASCO HERNAN",
+    "ALEXANDER ROJAS": "CASCO HERNAN",
+    "FERNANDO FIELG": "CASCO HERNAN",
+    "JUAN MANUEL GIMENEZ": "CASCO HERNAN",
+    "MENDEZ CARLOS": "CASCO HERNAN",
+    "MARIANO HERRERA": "CASCO HERNAN",
 }
 VENDOR_NAME_ALIASES = {
     "ENZO VILLAGRA": "VILLAGRA ENZO",
@@ -1371,6 +1371,7 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
     normalized["canal"] = normalized["canal"].fillna("Sin canal").astype(str).str.strip()
     normalized["negocio"] = normalized["negocio"].fillna("Sin negocio").astype(str).str.strip()
     normalized["mesa"] = mesa_from_promoter(normalized["promotor"])
+    normalized["supervisor"] = normalized["mesa"]
     normalized["unidad_negocio"] = np.select(
         [
             normalized["negocio"].str.contains("UNG", case=False, na=False),
