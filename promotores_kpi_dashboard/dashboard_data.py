@@ -48,11 +48,24 @@ KPI_FOCUSES = [
     "Core",
     "Value",
     "Above Core",
+    "Premium",
     "Latones 710",
     "Balanced Choices",
     "Nabs",
     "Eficiencia de ventas",
 ]
+
+BALANCED_BRANDS = {
+    "STELLA ARTOIS PURE GOLD",
+    "STELLA ARTOIS 0.0%",
+    "CORONA CERO",
+    "QUILMES 0.0%",
+    "MICHELOB ULTRA",
+}
+
+
+def brand_upper(ventas: pd.DataFrame):
+    return ventas["marca"].fillna("").str.upper().str.strip()
 
 
 def clean_text(value):
@@ -407,22 +420,40 @@ def filter_sales(ventas: pd.DataFrame, fecha, filter_type: str, filter_value: st
 
 def focus_sales(ventas: pd.DataFrame, focus: str):
     filtered = ventas.copy()
+    marca = brand_upper(filtered)
+    cza = filtered["division"].eq("CERVEZAS")
+    balanced = marca.isin(BALANCED_BRANDS)
     if focus == "Total CZA":
-        return filtered[filtered["division"].eq("CERVEZAS")]
+        return filtered[cza]
     if focus == "Core":
-        return filtered[
-            filtered["segmento"].eq("CORE")
-            | filtered["segmento_2"].eq("CORE+VALUE")
-            | filtered["segmento_3"].eq("CORE")
-        ]
+        core = (
+            marca.eq("BRAHMA")
+            | marca.str.startswith("BUDWEISER")
+            | (
+                marca.str.contains("QUILMES", na=False)
+                & ~marca.eq("QUILMES 1890")
+                & ~balanced
+            )
+        )
+        return filtered[cza & core]
     if focus == "Value":
-        return filtered[filtered["division"].eq("CERVEZAS") & filtered["marca"].eq("QUILMES 1890")]
+        return filtered[cza & marca.eq("QUILMES 1890")]
     if focus == "Above Core":
-        return filtered[filtered["segmento_2"].eq("ABOVE CORE")]
+        above_core = (
+            marca.str.startswith("STELLA ARTOIS")
+            | marca.str.startswith("ANDES ORIGEN")
+        ) & ~balanced
+        return filtered[cza & above_core]
+    if focus == "Premium":
+        premium = (
+            marca.str.startswith("CORONA")
+            | marca.str.startswith("PATAGONIA")
+        ) & ~balanced
+        return filtered[cza & premium]
     if focus == "Latones 710":
         return filtered[filtered["calibre_unificado"].eq("LATON 710 CC")]
     if focus == "Balanced Choices":
-        return filtered[filtered["segmento_3"].eq("BALANCE CHOICE")]
+        return filtered[cza & balanced]
     if focus == "Nabs":
         alcoholic = {"CERVEZAS", "ENV CERVEZAS", "VINOS"}
         return filtered[~filtered["division"].isin(alcoholic)]
@@ -466,9 +497,47 @@ def only_new_sku_activations_range(ventas: pd.DataFrame, start_date, end_date):
     return current.drop(columns=["cliente_producto"])
 
 
+def only_new_client_activations_range(ventas: pd.DataFrame, start_date, end_date, lookback_start=None):
+    start_date = pd.Timestamp(start_date)
+    end_date = pd.Timestamp(end_date)
+    lookback_start = pd.Timestamp(lookback_start) if lookback_start is not None else None
+    current = ventas[(ventas["fecha"].ge(start_date)) & (ventas["fecha"].le(end_date))].copy()
+    if current.empty:
+        return current
+    previous = ventas[ventas["fecha"].lt(start_date)].copy()
+    if lookback_start is not None:
+        previous = previous[previous["fecha"].ge(lookback_start)]
+    previous_clients = set(previous["cliente"].dropna().unique())
+    current = current[~current["cliente"].isin(previous_clients)].copy()
+    current = current.sort_values("fecha").drop_duplicates(["cliente"], keep="first")
+    return current
+
+
 def filter_sales_by_focus(ventas: pd.DataFrame, fecha, focus: str, rutas_base: pd.DataFrame | None = None, route: str = "Todas"):
     focused = focus_sales(ventas, focus)
     filtered = only_new_sku_activations(focused, fecha)
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    return filtered
+
+
+def filter_client_activations_by_focus_range(
+    ventas: pd.DataFrame,
+    start_date,
+    end_date,
+    focus: str,
+    rutas_base: pd.DataFrame | None = None,
+    route: str = "Todas",
+    lookback_start=None,
+):
+    focused = focus_sales(ventas, focus)
+    filtered = only_new_client_activations_range(focused, start_date, end_date, lookback_start)
     if rutas_base is not None and rutas_base.empty:
         return filtered.iloc[0:0].copy()
     if rutas_base is not None and not rutas_base.empty:

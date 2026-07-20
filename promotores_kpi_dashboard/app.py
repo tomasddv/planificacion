@@ -15,6 +15,7 @@ from dashboard_data import (
     DAY_GROUPS,
     EXCLUDED_VENDORS,
     KPI_FOCUSES,
+    filter_client_activations_by_focus_range,
     filter_sales_by_focus,
     filter_sales_by_focus_range,
     focus_sales,
@@ -550,6 +551,18 @@ def apply_accumulated_remaining(daily_summary: pd.DataFrame, accumulated_summary
     return summary.drop(columns=["clientes_restantes_acum"])
 
 
+def apply_remaining_before_day(daily_summary: pd.DataFrame, prior_month_summary: pd.DataFrame):
+    prior = prior_month_summary[["vendedor", "clientes_compra"]].rename(
+        columns={"clientes_compra": "clientes_activados_previos"}
+    )
+    summary = daily_summary.merge(prior, on="vendedor", how="left")
+    summary["clientes_activados_previos"] = summary["clientes_activados_previos"].fillna(0)
+    summary["clientes_restantes"] = (summary["clientes_ruta"] - summary["clientes_activados_previos"]).clip(lower=0)
+    summary["clientes_compra"] = summary[["clientes_compra", "clientes_restantes"]].min(axis=1)
+    summary.loc[summary["clientes_restantes"].le(0), "brand_distribution"] = 0
+    return summary.drop(columns=["clientes_activados_previos"])
+
+
 def filter_sales_by_focus_purchase_range(
     ventas_df: pd.DataFrame,
     start_date,
@@ -809,20 +822,25 @@ if view == "Planificación diaria":
     if route != suggested_route and route != "Todas":
         real_date = latest_sales_date_for_route(ventas, day_date, day_rutas_base, route)
     accumulated_start = real_date.replace(day=1)
-    filtered_1 = filter_sales_by_focus_range(ventas, real_date, real_date, focus_1, day_rutas_base, route)
+    prior_accumulated_end = real_date - pd.Timedelta(days=1)
+    filtered_1 = filter_client_activations_by_focus_range(
+        ventas, real_date, real_date, focus_1, day_rutas_base, route, lookback_start=accumulated_start
+    )
     filtered_1 = apply_promoter_filter(filtered_1, day_promoter)
     summary_1 = summarize(filtered_1, day_rutas_base, day_promotores, real_date, route)
-    filtered_1_accum = filter_sales_by_focus_range(ventas, accumulated_start, real_date, focus_1, day_rutas_base, route)
-    filtered_1_accum = apply_promoter_filter(filtered_1_accum, day_promoter)
-    summary_1_accum = summarize(filtered_1_accum, day_rutas_base, day_promotores, real_date, route)
-    summary_1 = apply_accumulated_remaining(summary_1, summary_1_accum)
-    filtered_2 = filter_sales_by_focus_range(ventas, real_date, real_date, focus_2, day_rutas_base, route)
+    filtered_1_prior = filter_sales_by_focus_purchase_range(ventas, accumulated_start, prior_accumulated_end, focus_1, day_rutas_base, route)
+    filtered_1_prior = apply_promoter_filter(filtered_1_prior, day_promoter)
+    summary_1_prior = summarize(filtered_1_prior, day_rutas_base, day_promotores, real_date, route)
+    summary_1 = apply_remaining_before_day(summary_1, summary_1_prior)
+    filtered_2 = filter_client_activations_by_focus_range(
+        ventas, real_date, real_date, focus_2, day_rutas_base, route, lookback_start=accumulated_start
+    )
     filtered_2 = apply_promoter_filter(filtered_2, day_promoter)
     summary_2 = summarize(filtered_2, day_rutas_base, day_promotores, real_date, route)
-    filtered_2_accum = filter_sales_by_focus_range(ventas, accumulated_start, real_date, focus_2, day_rutas_base, route)
-    filtered_2_accum = apply_promoter_filter(filtered_2_accum, day_promoter)
-    summary_2_accum = summarize(filtered_2_accum, day_rutas_base, day_promotores, real_date, route)
-    summary_2 = apply_accumulated_remaining(summary_2, summary_2_accum)
+    filtered_2_prior = filter_sales_by_focus_purchase_range(ventas, accumulated_start, prior_accumulated_end, focus_2, day_rutas_base, route)
+    filtered_2_prior = apply_promoter_filter(filtered_2_prior, day_promoter)
+    summary_2_prior = summarize(filtered_2_prior, day_rutas_base, day_promotores, real_date, route)
+    summary_2 = apply_remaining_before_day(summary_2, summary_2_prior)
     if real_date.date() != day_date.date():
         st.caption(f"Real tomado de venta {real_date.date()} para la ruta {route}; planificación guardada en {plan_period}.")
 
