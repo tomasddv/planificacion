@@ -33,6 +33,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "20260519122321plantillaClientesAR.xlsx": "1GuRrGKlb7SLjI9h81XssZTpWzgPUrpRb",
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
+    "reporte de clientes.xlsx": "1ZR9WOeqpaq9t-mJZM4f9AlUV7BIrKVo-",
     "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
@@ -443,6 +444,22 @@ def save_kpi_plan_to_sheet(option: str, fecha, route: str, edited: pd.DataFrame,
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def sheet_save_message(result, tarjeta: str):
+    if not result:
+        st.toast(f"Planificacion de {tarjeta.lower()} guardada localmente.")
+        return
+    if not result.get("ok", False):
+        st.error(f"Guardado local OK, pero Sheet respondio error: {result.get('error')}")
+        return
+    if result.get("hoja") != "BD_KPI_PROMOTORES":
+        st.error(
+            "Guardado local OK, pero el Apps Script publicado no es la version nueva. "
+            "Actualiza y redeploya el script para crear la hoja BD_KPI_PROMOTORES."
+        )
+        return
+    st.toast(f"Planificacion de {tarjeta.lower()} guardada en Sheet. Filas: {result.get('escritos', 0)}")
 
 
 def planning_table(summary: pd.DataFrame, option: str, metric: str, fecha, route: str):
@@ -1030,12 +1047,7 @@ if view == "Planificación diaria":
     if st.button("Guardar planificacion tarjeta 1", use_container_width=True):
         update_plan(card_1_option, plan_period, route, edited_plan_1)
         result = save_kpi_plan_to_sheet(card_1_option, plan_period, route, edited_plan_1, "Tarjeta 1")
-        if result and not result.get("ok", False):
-            st.warning(f"Guardado local OK, pero Sheet respondio error: {result.get('error')}")
-        elif result:
-            st.toast(f"Planificacion de tarjeta 1 guardada en Sheet. Filas: {result.get('escritos', 0)}")
-        else:
-            st.toast("Planificacion de tarjeta 1 guardada localmente.")
+        sheet_save_message(result, "Tarjeta 1")
         st.cache_data.clear()
         st.rerun()
 
@@ -1063,12 +1075,7 @@ if view == "Planificación diaria":
     if st.button("Guardar planificacion tarjeta 2", use_container_width=True):
         update_plan(card_2_option, plan_period, route, edited_plan_2)
         result = save_kpi_plan_to_sheet(card_2_option, plan_period, route, edited_plan_2, "Tarjeta 2")
-        if result and not result.get("ok", False):
-            st.warning(f"Guardado local OK, pero Sheet respondio error: {result.get('error')}")
-        elif result:
-            st.toast(f"Planificacion de tarjeta 2 guardada en Sheet. Filas: {result.get('escritos', 0)}")
-        else:
-            st.toast("Planificacion de tarjeta 2 guardada localmente.")
+        sheet_save_message(result, "Tarjeta 2")
         st.cache_data.clear()
         st.rerun()
 

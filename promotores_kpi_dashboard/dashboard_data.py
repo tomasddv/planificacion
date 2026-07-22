@@ -243,14 +243,21 @@ def route_flags_from_visit_day(value):
         return flags
     replacements = {
         "LUNES": "LU",
+        "LUN": "LU",
         "MARTES": "MA",
+        "MAR": "MA",
         "MIERCOLES": "MI",
         "MIÉRCOLES": "MI",
+        "MIE": "MI",
         "JUEVES": "JU",
+        "JUE": "JU",
         "VIERNES": "VI",
+        "VIE": "VI",
         "SABADO": "SA",
         "SÁBADO": "SA",
+        "SAB": "SA",
         "DOMINGO": "DO",
+        "DOM": "DO",
     }
     for source, target in replacements.items():
         text = text.replace(source, target)
@@ -281,6 +288,7 @@ def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores:
     dia_col = report.columns[excel_col_index("CH")] if len(report.columns) > excel_col_index("CH") else first_existing_column(report, ("DIA", "DÍA", "VISITA"))
     cliente_col = first_existing_column(report, ("COD. CLIENTE", "COD CLIENTE", "CODIGO CLIENTE", "CÓDIGO CLIENTE", "CLIENTE"))
     razon_col = first_existing_column(report, ("RAZON SOCIAL", "RAZÓN SOCIAL", "DESCRIPCION", "DESCRIPCIÓN", "CLIENTE"))
+    ruta_col = first_existing_column(report, ("RUTA DE VENTA", "RUTA"))
     if promotor_col is None or dia_col is None or cliente_col is None:
         return pd.DataFrame(columns=columns)
     promotores_lookup = promotores.dropna(subset=["promotor"]).drop_duplicates("promotor")
@@ -299,7 +307,7 @@ def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores:
         rows.append(
             {
                 "vendedor": vendedor,
-                "ruta": clean_code(row.get("Ruta")) or vendedor,
+                "ruta": clean_code(row.get(ruta_col)) if ruta_col is not None else vendedor,
                 "cliente": cliente,
                 "razon_social": clean_text(row.get(razon_col)) if razon_col is not None else "",
                 **flags,
