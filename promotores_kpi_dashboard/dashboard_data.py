@@ -215,6 +215,110 @@ def find_data_file(base: Path, required_terms: tuple[str, ...], suffixes: tuple[
     return candidates[0] if candidates else None
 
 
+
+
+def excel_col_index(label: str):
+    index = 0
+    for char in label.upper():
+        if not char.isalpha():
+            continue
+        index = index * 26 + ord(char) - ord("A") + 1
+    return index - 1
+
+
+def first_existing_column(df: pd.DataFrame, patterns: tuple[str, ...]):
+    normalized = {str(col).strip().upper(): col for col in df.columns}
+    for pattern in patterns:
+        pattern = pattern.upper()
+        for name, col in normalized.items():
+            if pattern in name:
+                return col
+    return None
+
+
+def route_flags_from_visit_day(value):
+    text = clean_text(value).upper()
+    flags = {"lu": "", "ma": "", "mi": "", "ju": "", "vi": "", "sa": "", "do": ""}
+    if not text:
+        return flags
+    replacements = {
+        "LUNES": "LU",
+        "MARTES": "MA",
+        "MIERCOLES": "MI",
+        "MIÉRCOLES": "MI",
+        "JUEVES": "JU",
+        "VIERNES": "VI",
+        "SABADO": "SA",
+        "SÁBADO": "SA",
+        "DOMINGO": "DO",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    if "LUJU" in text:
+        flags["lu"] = "X"
+        flags["ju"] = "X"
+    if "MAVI" in text:
+        flags["ma"] = "X"
+        flags["vi"] = "X"
+    if "MISA" in text:
+        flags["mi"] = "X"
+        flags["sa"] = "X"
+    day_map = {"LU": "lu", "MA": "ma", "MI": "mi", "JU": "ju", "VI": "vi", "SA": "sa", "DO": "do"}
+    for token, col in day_map.items():
+        if re.search(rf"(^|[^A-Z]){token}([^A-Z]|$)", text):
+            flags[col] = "X"
+    return flags
+
+
+def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores: pd.DataFrame):
+    columns = ["vendedor", "ruta", "cliente", "razon_social", "lu", "ma", "mi", "ju", "vi", "sa", "do"]
+    if path is None or not path.exists():
+        return pd.DataFrame(columns=columns)
+    report = pd.read_excel(path, dtype=str)
+    if report.empty:
+        return pd.DataFrame(columns=columns)
+    promotor_col = report.columns[excel_col_index("CG")] if len(report.columns) > excel_col_index("CG") else first_existing_column(report, ("PROMOTOR", "VENDEDOR"))
+    dia_col = report.columns[excel_col_index("CH")] if len(report.columns) > excel_col_index("CH") else first_existing_column(report, ("DIA", "DÍA", "VISITA"))
+    cliente_col = first_existing_column(report, ("COD. CLIENTE", "COD CLIENTE", "CODIGO CLIENTE", "CÓDIGO CLIENTE", "CLIENTE"))
+    razon_col = first_existing_column(report, ("RAZON SOCIAL", "RAZÓN SOCIAL", "DESCRIPCION", "DESCRIPCIÓN", "CLIENTE"))
+    if promotor_col is None or dia_col is None or cliente_col is None:
+        return pd.DataFrame(columns=columns)
+    promotores_lookup = promotores.dropna(subset=["promotor"]).drop_duplicates("promotor")
+    promotores_lookup = promotores_lookup.assign(promotor_key=promotores_lookup["promotor"].map(lambda value: clean_text(value).upper()))
+    promotor_to_vendedor = promotores_lookup.set_index("promotor_key")["vendedor"].to_dict()
+    rows = []
+    for _, row in report.iterrows():
+        cliente = clean_code(row.get(cliente_col))
+        promotor = clean_text(row.get(promotor_col)).upper()
+        vendedor = promotor_to_vendedor.get(promotor)
+        if not cliente or not vendedor:
+            continue
+        flags = route_flags_from_visit_day(row.get(dia_col))
+        if not any(flags.values()):
+            continue
+        rows.append(
+            {
+                "vendedor": vendedor,
+                "ruta": clean_code(row.get("Ruta")) or vendedor,
+                "cliente": cliente,
+                "razon_social": clean_text(row.get(razon_col)) if razon_col is not None else "",
+                **flags,
+            }
+        )
+    reporte = pd.DataFrame(rows, columns=columns)
+    if reporte.empty:
+        return reporte
+    if not clientes.empty:
+        reporte = reporte.merge(clientes, on="cliente", how="left")
+        reporte["nombre_fantasia"] = reporte["nombre_fantasia"].fillna("")
+        reporte["licencia_alcohol"] = reporte["licencia_alcohol"].fillna("")
+    else:
+        reporte["nombre_fantasia"] = ""
+        reporte["licencia_alcohol"] = ""
+    reporte["razon_social"] = reporte["razon_social"].where(reporte["razon_social"].ne(""), reporte["nombre_fantasia"])
+    return reporte.drop_duplicates(["vendedor", "cliente", "lu", "ma", "mi", "ju", "vi", "sa", "do"])
+
+
 def load_clientes(path: Path | None):
     columns = ["cliente", "nombre_fantasia", "licencia_alcohol"]
     if path is None or not path.exists():
@@ -356,6 +460,7 @@ def load_dataset(base_dir: str):
     aux_path = find_data_file(base, ("AUXILIARES",), (".xlsx", ".xls"))
     ventas_path = find_data_file(base, ("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL",))
     ventas_anual_path = find_data_file(base, ("VENTA", "ANUAL"), (".txt", ".csv"))
+    reporte_clientes_path = find_data_file(base, ("REPORTE", "CLIENTES"), (".xlsx", ".xls", ".csv", ".txt"))
     clientes_path = find_clientes_path(base)
     missing = []
     if rutas_path is None:
@@ -388,6 +493,12 @@ def load_dataset(base_dir: str):
     promotores = promotores_ruta.merge(promotores_venta, on="vendedor", how="left")
     promotores["promotor"] = promotores["promotor"].fillna(promotores["vendedor"].map(lambda x: f"VND {x}"))
     promotores["supervisor"] = promotores["promotor"].map(SUPERVISORES).fillna("OTROS")
+    reporte_rutas = load_reporte_clientes(reporte_clientes_path, clientes, promotores)
+    if not reporte_rutas.empty:
+        rutas = pd.concat([rutas, reporte_rutas], ignore_index=True).drop_duplicates(
+            ["vendedor", "cliente", "lu", "ma", "mi", "ju", "vi", "sa", "do"],
+            keep="last",
+        )
     fechas = sorted(ventas["fecha"].dropna().unique())
     rutas_dia = build_route_days(rutas, fechas, promotores)
     rutas_grupo = build_route_groups(rutas, promotores)
@@ -405,6 +516,7 @@ def load_dataset(base_dir: str):
             "auxiliares": aux_path,
             "ventas": ventas_path,
             "ventas_anual": ventas_anual_path or "No encontrado",
+            "reporte_clientes": reporte_clientes_path or "No encontrado",
             "clientes": clientes_path or "No encontrado",
         },
     }
@@ -455,8 +567,8 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     if focus == "Balanced Choices":
         return filtered[cza & balanced]
     if focus == "Nabs":
-        alcoholic = {"CERVEZAS", "ENV CERVEZAS", "VINOS"}
-        return filtered[~filtered["division"].isin(alcoholic)]
+        nabs_divisions = {"AGUAS", "BEB ENERGIZANTES", "BEBIDAS SABORIZADAS", "GASEOSAS", "ISOTONICAS"}
+        return filtered[filtered["division"].isin(nabs_divisions)]
     if focus == "Eficiencia de ventas":
         return filtered
     return filtered

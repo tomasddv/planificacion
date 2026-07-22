@@ -218,6 +218,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
         return (
             "RUTAS" in normalized
             or "AUXILIARES" in normalized
+            or ("REPORTE" in normalized and "CLIENTES" in normalized)
             or ("VENTA" in normalized and "DIARIA" in compact and "ANUAL" not in normalized)
             or "PLANTILLACLIENTESAR" in compact
         )
@@ -233,6 +234,27 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
                 futures = [executor.submit(download_default_file, item) for item in DEFAULT_DRIVE_FILE_IDS.items()]
                 for future in as_completed(futures):
                     future.result()
+            try:
+                drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
+                selected_reports = [
+                    file for file in (drive_files or [])
+                    if "REPORTE" in str(file.path).upper() and "CLIENTES" in str(file.path).upper()
+                ]
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(
+                            gdown.download,
+                            id=file.id,
+                            output=str(tmp / Path(str(file.path)).name),
+                            quiet=True,
+                            use_cookies=False,
+                        )
+                        for file in selected_reports
+                    ]
+                    for future in as_completed(futures):
+                        future.result()
+            except Exception:
+                pass
         else:
             drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
             selected_files = [file for file in (drive_files or []) if wanted_drive_file(str(file.path))]
@@ -603,6 +625,70 @@ def filter_any_purchase_range(
     return filtered
 
 
+def filter_business_sku_purchase_range(
+    ventas_df: pd.DataFrame,
+    start_date,
+    end_date,
+    business: str,
+    sku: str,
+    rutas_base: pd.DataFrame | None = None,
+    route: str = "Todas",
+):
+    filtered = ventas_df[(ventas_df["fecha"].ge(pd.Timestamp(start_date))) & (ventas_df["fecha"].le(pd.Timestamp(end_date)))].copy()
+    if business != "Todos":
+        filtered = filtered[business_mask(filtered, business)]
+    if sku != "Todos":
+        filtered = filtered[filtered["producto"].fillna("").eq(sku)]
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    return filtered
+
+
+def business_options(ventas_df: pd.DataFrame):
+    available = []
+    for value in ["CZA", "UNG", "AGUAS", "MKTP", "SPIRITS", "OTROS"]:
+        if business_mask(ventas_df, value).any():
+            available.append(value)
+    return ["Todos"] + available
+
+
+def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
+    scoped = ventas_df.copy()
+    if business != "Todos":
+        scoped = scoped[business_mask(scoped, business)]
+    values = sorted(value for value in scoped["producto"].fillna("").unique() if value)
+    return ["Todos"] + values
+
+
+def business_mask(ventas_df: pd.DataFrame, business: str):
+    division = ventas_df["division"].fillna("").str.upper()
+    unidad = ventas_df["unidad_negocio"].fillna("").str.upper() if "unidad_negocio" in ventas_df.columns else ""
+    if business == "CZA":
+        return division.isin(["CERVEZAS", "ENV CERVEZAS"])
+    if business == "UNG":
+        return division.isin(["GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES"])
+    if business == "AGUAS":
+        return division.eq("AGUAS")
+    if business == "MKTP":
+        return division.str.contains("MKTPLACE|MARKETPLACE", na=False) | pd.Series(unidad, index=ventas_df.index).str.contains("MARKETPLACE", na=False)
+    if business == "SPIRITS":
+        return division.str.contains("SPIRITS", na=False)
+    if business == "OTROS":
+        known = (
+            division.isin(["CERVEZAS", "ENV CERVEZAS", "GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES", "AGUAS"])
+            | division.str.contains("MKTPLACE|MARKETPLACE|SPIRITS", na=False)
+            | pd.Series(unidad, index=ventas_df.index).str.contains("MARKETPLACE", na=False)
+        )
+        return ~known
+    return pd.Series(True, index=ventas_df.index)
+
+
 def apply_promoter_filter(df: pd.DataFrame, promoter: str):
     if promoter == "Todos" or df.empty or "promotor" not in df.columns:
         return df
@@ -669,6 +755,82 @@ def month_label(period):
     return f"{months[int(fecha.month)]} {int(fecha.year)}"
 
 
+def period_controls(prefix: str, fechas_venta: list, aux_path: str):
+    period_type = st.selectbox(
+        "Tipo período",
+        ["Mes acumulado actual", "Acumulado a fecha", "Mes cerrado histórico"],
+        index=0,
+        key=f"{prefix}_period_type",
+    )
+    period_value = "Mes acumulado"
+    annual_status = ""
+    historical_sales = None
+    if period_type == "Mes acumulado actual":
+        st.text_input("Período", "Mes acumulado", disabled=True, key=f"{prefix}_period_current_label")
+    elif period_type == "Acumulado a fecha":
+        period_value = st.selectbox("Período", fechas_venta, index=len(fechas_venta) - 1, key=f"{prefix}_period_date")
+    else:
+        with st.spinner("Preparando ventas historicas..."):
+            historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=False)
+        if not historical_sources:
+            st.error(annual_status)
+            st.stop()
+        historical_signature = tuple(
+            (str(path), path.stat().st_mtime, path.stat().st_size) for path in historical_sources
+        )
+        historical_sales = cached_load_historical_sales(
+            tuple(str(path) for path in historical_sources),
+            str(aux_path),
+            (
+                historical_signature,
+                str(aux_path),
+                Path(aux_path).stat().st_mtime,
+            ),
+        )
+        current_month = pd.Timestamp(max(fechas_venta)).to_period("M")
+        closed_months = sorted(
+            [period for period in historical_sales["fecha"].dropna().dt.to_period("M").unique() if period < current_month],
+            reverse=True,
+        )
+        if not closed_months:
+            st.error("No hay meses cerrados disponibles en venta anual.")
+            st.stop()
+        historical_cut = st.selectbox(
+            "Corte",
+            ["Mes cerrado", "Trimestre"],
+            index=0,
+            key=f"{prefix}_historical_cut",
+        )
+        if historical_cut == "Trimestre":
+            quarter_periods = closed_months[:3]
+            period_value = tuple(reversed(quarter_periods))
+            st.caption(" + ".join(month_label(period.start_time) for period in reversed(quarter_periods)))
+        else:
+            month_options = {month_label(period.start_time): period for period in closed_months}
+            month_selected = st.selectbox("Mes cerrado", list(month_options.keys()), index=0, key=f"{prefix}_closed_month")
+            period_value = month_options[month_selected]
+    sales_source = ventas
+    if period_type == "Mes acumulado actual":
+        end_date = pd.Timestamp(max(fechas_venta))
+        start_date = end_date.replace(day=1)
+        label = f"Mes acumulado {start_date.date()} a {end_date.date()}"
+    elif period_type == "Mes cerrado histórico":
+        sales_source = historical_sales
+        if isinstance(period_value, tuple):
+            start_date = pd.Timestamp(period_value[0].start_time)
+            end_date = pd.Timestamp(period_value[-1].end_time).normalize()
+            label = f"Trimestre {month_label(start_date)} a {month_label(end_date)} · {annual_status}"
+        else:
+            start_date = pd.Timestamp(period_value.start_time)
+            end_date = pd.Timestamp(period_value.end_time).normalize()
+            label = f"Mes cerrado {month_label(start_date)} · {annual_status}"
+    else:
+        end_date = pd.Timestamp(period_value)
+        start_date = end_date.replace(day=1)
+        label = f"Acumulado {start_date.date()} a {end_date.date()}"
+    return period_type, sales_source, start_date, end_date, label
+
+
 st.title("Dashboard Promotores")
 
 with st.sidebar:
@@ -710,7 +872,7 @@ route_options = ["Todas"] + route_groups
 
 view = st.radio(
     "Vista",
-    ["Acumulado mensual", "Planificación diaria", "No compradores"],
+    ["Acumulado mensual", "Planificación diaria", "No compradores", "No compradores SKU"],
     horizontal=True,
     label_visibility="collapsed",
     key="main_view",
@@ -1108,10 +1270,8 @@ if view == "No compradores":
     nb_rutas_base = apply_alcohol_license_filter(nb_rutas_base, nb_option)
     if nb_option == "Todos":
         nb_filtered = filter_any_purchase_range(nb_sales_source, nb_start, nb_end, nb_rutas_base, nb_route)
-    elif nb_period_type == "Mes cerrado histórico":
-        nb_filtered = filter_sales_by_focus_purchase_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
     else:
-        nb_filtered = filter_sales_by_focus_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
+        nb_filtered = filter_sales_by_focus_purchase_range(nb_sales_source, nb_start, nb_end, nb_focus, nb_rutas_base, nb_route)
     nb_filtered = apply_supervisor_filter(nb_filtered, nb_supervisor)
     nb_filtered = apply_promoter_filter(nb_filtered, nb_promoter)
     nb_table = non_buyer_clients(nb_filtered, nb_rutas_base, nb_route)
@@ -1143,6 +1303,147 @@ if view == "No compradores":
             nb_view["Razón Social"],
         )
     st.dataframe(nb_view, use_container_width=True, hide_index=True)
+
+if view == "No compradores SKU":
+    supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
+    sku_cols = st.columns([1.35, 1.35, 1.05, 1.25, 1.35, 1.15, 1.8, 1.5])
+    with sku_cols[0]:
+        sku_period_type = st.selectbox(
+            "Tipo período",
+            ["Mes acumulado actual", "Acumulado a fecha", "Mes cerrado histórico"],
+            index=0,
+            key="sku_period_type",
+        )
+    with sku_cols[1]:
+        sku_period = "Mes acumulado"
+        sku_annual_status = ""
+        sku_annual_ventas = None
+        if sku_period_type == "Mes acumulado actual":
+            st.text_input("Período", "Mes acumulado", disabled=True, key="sku_period_current_label")
+        elif sku_period_type == "Acumulado a fecha":
+            sku_period = st.selectbox("Período", fechas, index=len(fechas) - 1, key="sku_period_date")
+        else:
+            with st.spinner("Preparando ventas historicas..."):
+                sku_historical_sources, sku_annual_status = resolve_closed_month_sales_files(force_refresh=False)
+            if not sku_historical_sources:
+                st.error(sku_annual_status)
+                st.stop()
+            sku_historical_signature = tuple(
+                (str(path), path.stat().st_mtime, path.stat().st_size) for path in sku_historical_sources
+            )
+            sku_annual_ventas = cached_load_historical_sales(
+                tuple(str(path) for path in sku_historical_sources),
+                str(dataset["sources"]["auxiliares"]),
+                (
+                    sku_historical_signature,
+                    str(dataset["sources"]["auxiliares"]),
+                    Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
+                ),
+            )
+            current_month = pd.Timestamp(max(fechas)).to_period("M")
+            sku_closed_months = sorted(
+                [period for period in sku_annual_ventas["fecha"].dropna().dt.to_period("M").unique() if period < current_month],
+                reverse=True,
+            )
+            if not sku_closed_months:
+                st.error("No hay meses cerrados disponibles en venta anual.")
+                st.stop()
+            sku_historical_cut = st.selectbox(
+                "Corte",
+                ["Mes cerrado", "Trimestre"],
+                index=0,
+                key="sku_historical_cut",
+            )
+            if sku_historical_cut == "Trimestre":
+                sku_quarter_periods = sku_closed_months[:3]
+                sku_period = tuple(reversed(sku_quarter_periods))
+                st.caption(" + ".join(month_label(period.start_time) for period in reversed(sku_quarter_periods)))
+            else:
+                sku_month_options = {month_label(period.start_time): period for period in sku_closed_months}
+                sku_month_label = st.selectbox("Mes cerrado", list(sku_month_options.keys()), index=0, key="sku_closed_month")
+                sku_period = sku_month_options[sku_month_label]
+
+    sku_sales_source = ventas
+    if sku_period_type == "Mes acumulado actual":
+        sku_end = pd.Timestamp(max(fechas))
+        sku_start = sku_end.replace(day=1)
+        sku_label = f"Mes acumulado {sku_start.date()} a {sku_end.date()}"
+    elif sku_period_type == "Mes cerrado histórico":
+        sku_sales_source = sku_annual_ventas
+        if isinstance(sku_period, tuple):
+            sku_start = pd.Timestamp(sku_period[0].start_time)
+            sku_end = pd.Timestamp(sku_period[-1].end_time).normalize()
+            sku_label = f"Trimestre {month_label(sku_start)} a {month_label(sku_end)} · {sku_annual_status}"
+        else:
+            sku_start = pd.Timestamp(sku_period.start_time)
+            sku_end = pd.Timestamp(sku_period.end_time).normalize()
+            sku_label = f"Mes cerrado {month_label(sku_start)} · {sku_annual_status}"
+    else:
+        sku_end = pd.Timestamp(sku_period)
+        sku_start = sku_end.replace(day=1)
+        sku_label = f"Acumulado {sku_start.date()} a {sku_end.date()}"
+
+    with sku_cols[2]:
+        sku_route = st.selectbox("Grupo ruta", route_options, index=0, key="sku_route")
+    with sku_cols[3]:
+        sku_supervisor = st.selectbox("Supervisor", supervisor_options, index=0, key="sku_supervisor")
+    with sku_cols[4]:
+        sku_promoter_options = promoter_options_for(promotores, sku_supervisor)
+        sku_promoter = st.selectbox("Promotor", sku_promoter_options, index=0, key="sku_promoter")
+    with sku_cols[5]:
+        sku_business = st.selectbox("Negocio", business_options(sku_sales_source), index=0, key="sku_business")
+    with sku_cols[6]:
+        period_sales_for_options = sku_sales_source[
+            (sku_sales_source["fecha"].ge(pd.Timestamp(sku_start))) & (sku_sales_source["fecha"].le(pd.Timestamp(sku_end)))
+        ]
+        sku_product_options = sku_options_for_business(period_sales_for_options, sku_business)
+        sku_product = st.selectbox("SKU", sku_product_options, index=0, key="sku_product")
+    with sku_cols[7]:
+        st.caption("Clientes de la ruta que no compraron el negocio/SKU en el período seleccionado.")
+
+    sku_rutas_base = apply_supervisor_filter(rutas_grupo, sku_supervisor)
+    sku_rutas_base = apply_promoter_filter(sku_rutas_base, sku_promoter)
+    if sku_business == "CZA":
+        sku_rutas_base = sku_rutas_base[sku_rutas_base["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
+    sku_filtered = filter_business_sku_purchase_range(
+        sku_sales_source,
+        sku_start,
+        sku_end,
+        sku_business,
+        sku_product,
+        sku_rutas_base,
+        sku_route,
+    )
+    sku_filtered = apply_supervisor_filter(sku_filtered, sku_supervisor)
+    sku_filtered = apply_promoter_filter(sku_filtered, sku_promoter)
+    sku_table = non_buyer_clients(sku_filtered, sku_rutas_base, sku_route)
+
+    st.subheader("Clientes no compradores por negocio / SKU")
+    st.caption(sku_label)
+    sku_metric_cols = st.columns(3)
+    sku_metric_cols[0].metric("Clientes en ruta", f"{route_customer_count(sku_rutas_base, sku_route):,}")
+    sku_metric_cols[1].metric("Clientes con compra", f"{sku_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
+    sku_metric_cols[2].metric("No compradores", f"{len(sku_table):,}")
+
+    sku_view = sku_table.rename(
+        columns={
+            "grupo_ruta": "Grupo",
+            "ruta": "Ruta",
+            "supervisor": "Supervisor",
+            "promotor": "Promotor",
+            "vendedor": "Vnd.",
+            "cliente": "Cliente",
+            "nombre_fantasia": "Nombre Fantasía",
+            "razon_social": "Razón Social",
+        }
+    )
+    if "Nombre Fantasía" in sku_view.columns and "Razón Social" in sku_view.columns:
+        sku_view["Nombre Fantasía"] = sku_view["Nombre Fantasía"].fillna("")
+        sku_view["Nombre Fantasía"] = sku_view["Nombre Fantasía"].where(
+            sku_view["Nombre Fantasía"].ne(""),
+            sku_view["Razón Social"],
+        )
+    st.dataframe(sku_view, use_container_width=True, hide_index=True)
 
 with st.expander("Fuentes cargadas"):
     for label, path in dataset["sources"].items():
