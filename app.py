@@ -2459,6 +2459,55 @@ def table_for_pdf(table: pd.DataFrame, first_col: str) -> list[list[str]]:
     return output
 
 
+def pdf_badged_heading(text: str, badge: str, badge_color: str, style: ParagraphStyle, usable_width: float) -> Table:
+    badge_table = Table([[badge]], colWidths=[28], rowHeights=[18])
+    badge_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(badge_color)),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+            ]
+        )
+    )
+    heading = Table(
+        [[badge_table, Paragraph(text, style)]],
+        colWidths=[34, usable_width - 34],
+    )
+    heading.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    return heading
+
+
+def pdf_section_badge(title: str) -> tuple[str, str]:
+    text = title.upper()
+    if "DIVISION" in text or "NEGOCIO" in text:
+        return "HL", "#12B76A"
+    if "MESA" in text:
+        return "MS", "#1463FF"
+    if "CALIBRE" in text:
+        return "CB", "#7A5AF8"
+    if "CANAL" in text:
+        return "CN", "#F79009"
+    return "OK", "#0EA5E9"
+
+
 def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date: pd.Timestamp) -> bytes:
     buffer = io.BytesIO()
     page_width, _ = landscape(A4)
@@ -2492,7 +2541,15 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
         spaceBefore=6,
         spaceAfter=4,
     )
-    elements = [Paragraph(f"Informe venta del dia - {selected_date.strftime('%d/%m/%Y')}", title_style)]
+    elements = [
+        pdf_badged_heading(
+            f"Informe venta del dia - {selected_date.strftime('%d/%m/%Y')}",
+            "HL",
+            "#12B76A",
+            title_style,
+            usable_width,
+        )
+    ]
 
     compact_cols = {"ACUM ANT.", "ACUM. ACTUAL", "HOY", "TENDENCIA", "AA", "TENDENCIA VS AA"}
     full_cols = [
@@ -2515,7 +2572,8 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
             table_to_print = table[[first_col] + [col for col in table.columns if col in compact_cols]].copy()
         else:
             table_to_print = table.copy()
-        elements.append(Paragraph(title.upper(), section_style))
+        section_badge, section_color = pdf_section_badge(title)
+        elements.append(pdf_badged_heading(title.upper(), section_badge, section_color, section_style, usable_width))
         pdf_table = table_for_pdf(table_to_print, first_col)
         col_count = len(pdf_table[0])
         first_width = min(128, usable_width * 0.26)
