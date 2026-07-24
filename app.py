@@ -19,6 +19,8 @@ import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -2361,17 +2363,22 @@ def sales_mood(value: float | int | None, for_pdf: bool = False) -> str:
         return ""
     amount = float(value)
     if amount > 300:
-        return " :D FIESTA" if for_pdf else " 🥳"
+        return " 🥳"
     if amount > 200:
-        return " :D" if for_pdf else " 😄"
+        return " 😄"
     if amount >= 100:
-        return " :)" if for_pdf else " 🙂"
-    return " :(" if for_pdf else " 🙁"
+        return " 🙂"
+    return " 🙁"
 
 
-def format_exec_cell(value: float | int | None, column: str) -> str:
+def is_mood_row(row_label: object) -> bool:
+    label = str(row_label).strip().upper()
+    return label in {"TOTAL CVZA", "TOTAL CZA", "TOTAL UNG"}
+
+
+def format_exec_cell(value: float | int | None, column: str, row_label: object) -> str:
     text = format_exec_number(value)
-    if column == "HOY" and text != "-":
+    if column == "HOY" and text != "-" and is_mood_row(row_label):
         text += sales_mood(value)
     return text
 
@@ -2387,7 +2394,7 @@ def render_exec_table(title: str, table: pd.DataFrame, first_col: str) -> None:
             if column in {"TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"}:
                 cells.append(f"<td>{format_pct(row[column]).replace('+', '')}</td>")
             else:
-                cells.append(f"<td>{format_exec_cell(row[column], column)}</td>")
+                cells.append(f"<td>{format_exec_cell(row[column], column, row[first_col])}</td>")
         rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
     header = "".join(f"<th>{column}</th>" for column in table.columns)
     st.markdown(
@@ -2460,11 +2467,27 @@ def default_objectives() -> pd.DataFrame:
     return pd.DataFrame(DEFAULT_OBJECTIVES_ROWS)
 
 
-def make_pdf_cell(value, is_percent: bool = False, column: str = "") -> str:
+def register_pdf_emoji_font() -> str | None:
+    for font_path in [
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "seguiemj.ttf",
+        Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf"),
+    ]:
+        if not font_path.exists():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont("EmojiFont", str(font_path)))
+            return "EmojiFont"
+        except Exception:
+            continue
+    return None
+
+
+def make_pdf_cell(value, is_percent: bool = False, column: str = "", row_label: object = "") -> str:
     if is_percent:
         return format_pct(value).replace("+", "")
     text = format_exec_number(value)
-    if column == "HOY" and text != "-":
+    if column == "HOY" and text != "-" and is_mood_row(row_label):
         text += sales_mood(value, for_pdf=True)
     return text
 
@@ -2473,11 +2496,12 @@ def table_for_pdf(table: pd.DataFrame, first_col: str) -> list[list[str]]:
     output = [list(table.columns)]
     percent_cols = {"TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"}
     for _, row in table.iterrows():
-        output_row = [str(row[first_col])]
+        row_label = str(row[first_col])
+        output_row = [row_label]
         for column in table.columns:
             if column == first_col:
                 continue
-            output_row.append(make_pdf_cell(row[column], column in percent_cols, column))
+            output_row.append(make_pdf_cell(row[column], column in percent_cols, column, row_label))
         output.append(output_row)
     return output
 
@@ -2547,6 +2571,7 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
     usable_width = page_width - 2 * margin
     header_color = colors.HexColor("#28549A")
     first_col_color = colors.HexColor("#2F5EA8")
+    emoji_font = register_pdf_emoji_font()
     title_style = ParagraphStyle(
         "ReportTitle",
         fontName="Helvetica-Bold",
@@ -2602,8 +2627,7 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
         first_width = min(128, usable_width * 0.26)
         rest_width = (usable_width - first_width) / max(col_count - 1, 1)
         report_table = Table(pdf_table, colWidths=[first_width] + [rest_width] * (col_count - 1), repeatRows=1)
-        style = TableStyle(
-            [
+        style_commands = [
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, 0), 6.8),
@@ -2620,8 +2644,11 @@ def build_report_pdf(tables: list[tuple[str, pd.DataFrame, str]], selected_date:
                 ("RIGHTPADDING", (0, 0), (-1, -1), 3),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ]
-        )
+        ]
+        if emoji_font and "HOY" in pdf_table[0]:
+            hoy_col = pdf_table[0].index("HOY")
+            style_commands.append(("FONTNAME", (hoy_col, 1), (hoy_col, -1), emoji_font))
+        style = TableStyle(style_commands)
         report_table.setStyle(style)
         elements.append(report_table)
         elements.append(Spacer(1, 8))
