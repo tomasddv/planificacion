@@ -2356,6 +2356,26 @@ def format_exec_number(value: float | int | None) -> str:
     return text.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def sales_mood(value: float | int | None, for_pdf: bool = False) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    amount = float(value)
+    if amount > 300:
+        return " :D FIESTA" if for_pdf else " 🥳"
+    if amount > 200:
+        return " :D" if for_pdf else " 😄"
+    if amount >= 100:
+        return " :)" if for_pdf else " 🙂"
+    return " :(" if for_pdf else " 🙁"
+
+
+def format_exec_cell(value: float | int | None, column: str) -> str:
+    text = format_exec_number(value)
+    if column == "HOY" and text != "-":
+        text += sales_mood(value)
+    return text
+
+
 def render_exec_table(title: str, table: pd.DataFrame, first_col: str) -> None:
     rows = []
     for idx, row in table.iterrows():
@@ -2367,7 +2387,7 @@ def render_exec_table(title: str, table: pd.DataFrame, first_col: str) -> None:
             if column in {"TENDENCIA VS AA", "OBJ VS VENTAS", "TEND VS VENTAS"}:
                 cells.append(f"<td>{format_pct(row[column]).replace('+', '')}</td>")
             else:
-                cells.append(f"<td>{format_exec_number(row[column])}</td>")
+                cells.append(f"<td>{format_exec_cell(row[column], column)}</td>")
         rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
     header = "".join(f"<th>{column}</th>" for column in table.columns)
     st.markdown(
@@ -2440,10 +2460,13 @@ def default_objectives() -> pd.DataFrame:
     return pd.DataFrame(DEFAULT_OBJECTIVES_ROWS)
 
 
-def make_pdf_cell(value, is_percent: bool = False) -> str:
+def make_pdf_cell(value, is_percent: bool = False, column: str = "") -> str:
     if is_percent:
         return format_pct(value).replace("+", "")
-    return format_exec_number(value)
+    text = format_exec_number(value)
+    if column == "HOY" and text != "-":
+        text += sales_mood(value, for_pdf=True)
+    return text
 
 
 def table_for_pdf(table: pd.DataFrame, first_col: str) -> list[list[str]]:
@@ -2454,7 +2477,7 @@ def table_for_pdf(table: pd.DataFrame, first_col: str) -> list[list[str]]:
         for column in table.columns:
             if column == first_col:
                 continue
-            output_row.append(make_pdf_cell(row[column], column in percent_cols))
+            output_row.append(make_pdf_cell(row[column], column in percent_cols, column))
         output.append(output_row)
     return output
 
