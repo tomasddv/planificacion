@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 import app as sales_app
@@ -608,20 +607,6 @@ def render_summary_table(summary: pd.DataFrame) -> None:
     )
 
 
-def chart_layout(fig):
-    fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#ffffff",
-        font=dict(family="Arial", color="#101828", size=13),
-        margin=dict(l=20, r=20, t=48, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    fig.update_xaxes(showgrid=False, color="#101828")
-    fig.update_yaxes(gridcolor="rgba(16,24,40,.14)", color="#101828")
-    return fig
-
-
 def export_summary_excel(export: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -696,32 +681,6 @@ def main() -> None:
     summary = build_customer_summary(filtered)
     summary_view = apply_summary_filters(summary)
     render_kpis(summary_view)
-
-    left, right = st.columns(2)
-    with left:
-        by_action = filtered.groupby(["fecha", "accion"], as_index=False)["bultos"].sum()
-        fig = px.line(
-            by_action,
-            x="fecha",
-            y="bultos",
-            color="accion",
-            markers=True,
-            title="Bultos diarios por accion",
-            color_discrete_map={"CORE": "#1463ff", "VALUE": "#f79009"},
-        )
-        st.plotly_chart(chart_layout(fig), width="stretch")
-    with right:
-        top_clients = summary_view.assign(total_bultos=summary_view["CORE"] + summary_view["VALUE"]).nlargest(15, "total_bultos")
-        fig = px.bar(
-            top_clients,
-            x="total_bultos",
-            y="cliente",
-            color="canal_accion",
-            orientation="h",
-            title="Top clientes por bultos Core + Value",
-            color_discrete_map={"K+T": "#1463ff", "AS": "#12b76a"},
-        )
-        st.plotly_chart(chart_layout(fig), width="stretch")
 
     st.subheader("Detalle por cliente")
     render_summary_table(summary_view)
