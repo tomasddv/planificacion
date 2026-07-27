@@ -316,6 +316,7 @@ def normalize_bultos(raw: pd.DataFrame, quantity_col: str) -> pd.DataFrame:
         + normalized["ruta"].fillna("").astype(str).str.strip()
     ).str.strip(" -")
     normalized["vendedor"] = normalized["vendedor"].fillna("Sin vendedor").astype(str).str.strip()
+    normalized["supervisor"] = sales_app.mesa_from_promoter(normalized["vendedor"])
     normalized["marca"] = normalized["marca"].fillna("Sin marca").astype(str).str.strip()
     normalized["calibre"] = normalized["calibre"].fillna("Sin calibre").astype(str).str.strip()
     normalized["negocio"] = normalized["negocio"].fillna("Sin negocio").astype(str).str.strip()
@@ -444,7 +445,7 @@ def apply_filters(data: pd.DataFrame) -> pd.DataFrame:
     for column, label in [
         ("canal_accion", "Canal accion"),
         ("accion", "Accion"),
-        ("vendedor", "Vendedor"),
+        ("supervisor", "Supervisor"),
         ("ruta", "Ruta"),
         ("cliente", "Cliente"),
     ]:
@@ -462,6 +463,9 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
         ["cliente_codigo", "cliente", "canal_accion", "ruta", "vendedor", "accion"],
         as_index=False,
     ).agg(bultos=("bultos", "sum"), tope=("tope", "first"))
+    supervisors = data.groupby("cliente_codigo", as_index=False)["supervisor"].agg(
+        lambda values: " / ".join(sorted(set(values.dropna().astype(str))))
+    )
     pivot = grouped.pivot_table(
         index=["cliente_codigo", "cliente", "canal_accion", "ruta", "vendedor"],
         columns="accion",
@@ -469,6 +473,7 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
         aggfunc="sum",
         fill_value=0.0,
     ).reset_index()
+    pivot = pivot.merge(supervisors, on="cliente_codigo", how="left")
     for action in ["CORE", "VALUE"]:
         if action not in pivot.columns:
             pivot[action] = 0.0
@@ -583,6 +588,7 @@ def render_summary_table(summary: pd.DataFrame) -> None:
             f"<td>{format_num(row['tope_VALUE'])}</td>"
             f"<td class='{status_class(row['avance_VALUE'])}'>{format_pct(row['avance_VALUE'])}</td>"
             f"<td>{format_num(row['restante_VALUE'])}</td>"
+            f"<td>{row['supervisor']}</td>"
             f"<td>{row['vendedor']}</td>"
             f"<td>{row['ruta']}</td>"
             "</tr>"
@@ -596,7 +602,7 @@ def render_summary_table(summary: pd.DataFrame) -> None:
                         <th>Cod cliente</th><th>Cliente</th><th>Canal</th>
                         <th>Core bultos</th><th>Tope Core</th><th>Avance Core</th><th>Restan Core</th>
                         <th>Value bultos</th><th>Tope Value</th><th>Avance Value</th><th>Restan Value</th>
-                        <th>Vendedor</th><th>Ruta</th>
+                        <th>Supervisor</th><th>Vendedor</th><th>Ruta</th>
                     </tr>
                 </thead>
                 <tbody>{''.join(rows)}</tbody>
@@ -699,6 +705,7 @@ def main() -> None:
             "tope_VALUE": "Tope Value",
             "avance_VALUE": "Avance Value %",
             "restante_VALUE": "Restan Value",
+            "supervisor": "Supervisor",
             "vendedor": "Vendedor",
             "ruta": "Ruta",
         }
