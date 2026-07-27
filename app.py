@@ -2142,11 +2142,14 @@ def daily_sales_curve_by_business(df: pd.DataFrame) -> pd.DataFrame:
     grouped = scoped.groupby(["fecha", "grupo_venta"], as_index=False)["hl"].sum()
     dates = pd.date_range(grouped["fecha"].min(), grouped["fecha"].max(), freq="D")
     full_index = pd.MultiIndex.from_product([dates, SALES_CURVE_ORDER], names=["fecha", "grupo_venta"])
-    return (
+    curve = (
         grouped.set_index(["fecha", "grupo_venta"])
         .reindex(full_index, fill_value=0.0)
         .reset_index()
     )
+    holiday_dates = argentina_holidays_for_years(sorted(set(curve["fecha"].dt.year.tolist())))
+    non_selling_zero = curve["fecha"].map(lambda date: selling_day_weight(date, holiday_dates) == 0) & curve["hl"].eq(0)
+    return curve[~non_selling_zero].copy()
 
 
 def executive_summary_table(
