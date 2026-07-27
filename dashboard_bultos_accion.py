@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ SEGMENTOS_ACCION = {
     "CVZA CORE": "CORE",
     "CVZA VALUE": "VALUE",
 }
+TARGET_QUANTITY_COLUMN = "Cantidades Totales"
 
 
 def inject_style() -> None:
@@ -50,6 +52,10 @@ def inject_style() -> None:
             background: linear-gradient(180deg, #0f172a 0%, #172554 100%);
         }
         section[data-testid="stSidebar"] * { color: #f8fafc !important; }
+        div[data-testid="stAlert"] * {
+            color: #101828 !important;
+            font-weight: 750;
+        }
         .hero {
             background: linear-gradient(135deg, #102a6b 0%, #1463ff 54%, #00a7c8 100%);
             color: white;
@@ -172,7 +178,78 @@ def latest_bultos_file(folder: Path | None) -> Path | None:
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
+def drive_folder_items(drive_url: str) -> list:
+    try:
+        import gdown
+
+        return gdown.download_folder(url=drive_url, output=".", quiet=True, use_cookies=False, skip_download=True) or []
+    except Exception:
+        return []
+
+
+def download_drive_item(item, target_folder: Path) -> Path | None:
+    target_folder.mkdir(parents=True, exist_ok=True)
+    file_name = Path(str(item.path)).name
+    target_path = target_folder / file_name
+    tmp_path = target_folder / f"{file_name}.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    try:
+        import gdown
+
+        gdown.download(id=item.id, output=str(tmp_path), quiet=True, use_cookies=False)
+        if tmp_path.exists() and tmp_path.stat().st_size > 0:
+            if target_path.exists():
+                target_path.unlink(missing_ok=True)
+            tmp_path.rename(target_path)
+            return target_path
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+    return target_path if target_path.exists() else None
+
+
+def latest_drive_item(items: list, include_terms: tuple[str, ...], suffixes: tuple[str, ...]) -> object | None:
+    include_terms = tuple(clean_name(term) for term in include_terms)
+    matches = []
+    for item in items:
+        name = Path(str(item.path)).name
+        stem = clean_name(Path(name).stem)
+        if Path(name).suffix.lower() in suffixes and all(term in stem for term in include_terms):
+            matches.append(item)
+    return matches[-1] if matches else None
+
+
+def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path | None:
+    target = sales_app.PROJECT_ROOT / ".cloud_data" / "bultos_accion"
+    if target.exists() and any(target.iterdir()) and not force_refresh:
+        return target
+    items = drive_folder_items(drive_url)
+    if not items:
+        return target if target.exists() and any(target.iterdir()) else None
+    tmp_target = sales_app.PROJECT_ROOT / ".cloud_data" / f"bultos_accion_tmp_{int(time.time())}"
+    if tmp_target.exists():
+        shutil.rmtree(tmp_target, ignore_errors=True)
+    tmp_target.mkdir(parents=True, exist_ok=True)
+
+    needed = [
+        latest_drive_item(items, ("venta", "bulto"), (".txt", ".csv")),
+        latest_drive_item(items, ("auxiliar",), (".xlsx", ".xls")),
+        latest_drive_item(items, ("cliente",), (".xlsx", ".xls", ".txt", ".csv")),
+    ]
+    downloaded = [download_drive_item(item, tmp_target) for item in needed if item is not None]
+    if not any(path is not None for path in downloaded):
+        shutil.rmtree(tmp_target, ignore_errors=True)
+        return target if target.exists() and any(target.iterdir()) else None
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+    tmp_target.rename(target)
+    return target
+
+
 def choose_quantity_column(raw: pd.DataFrame) -> str:
+    for column in raw.columns:
+        if clean_name(column) == clean_name(TARGET_QUANTITY_COLUMN):
+            return str(column)
     candidates = []
     for column in raw.columns:
         key = clean_name(column)
@@ -194,7 +271,9 @@ def normalize_bultos(raw: pd.DataFrame, quantity_col: str) -> pd.DataFrame:
     raw = raw.copy()
     original_columns = list(raw.columns)
     clean_columns = sales_app.make_unique_columns(original_columns)
-    quantity_index = original_columns.index(quantity_col) if quantity_col in original_columns else len(original_columns) - 1
+    quantity_index = original_columns.index(quantity_col) if quantity_col in original_columns else -1
+    if quantity_index < 0:
+        raise ValueError(f"El archivo debe contener la columna '{TARGET_QUANTITY_COLUMN}'.")
     quantity_key = clean_columns[quantity_index]
     raw.columns = clean_columns
     fecha = sales_app.parse_period_date(sales_app.first_present(raw, ["descripcion_periodo"], "C"))
@@ -248,6 +327,53 @@ def read_raw_source(path: Path | None, uploaded_file) -> tuple[pd.DataFrame, str
     return sales_app.read_tabular(path), path.name
 
 
+def load_bultos_customer_channels(path: Path | None) -> pd.DataFrame:
+    if path is None or not path.exists():
+        return pd.DataFrame(columns=["cliente_codigo", "canal"])
+    try:
+        customers, _ = sales_app.load_customer_channels(str(path), path.stat().st_mtime_ns)
+        if not customers.empty and "canal_maestro" in customers.columns:
+            return customers.rename(columns={"canal_maestro": "canal"})[["cliente_codigo", "canal"]]
+    except Exception:
+        pass
+
+    if path.suffix.lower() in {".xlsx", ".xls"}:
+        source = pd.read_excel(path, dtype="string")
+    else:
+        source = sales_app.read_tabular(path)
+    source = source.copy()
+    source.columns = sales_app.make_unique_columns(list(source.columns))
+    customer_col = next((col for col in source.columns if col in {"cliente", "cod_cliente", "codigo_cliente"}), None)
+    if customer_col is None:
+        return pd.DataFrame(columns=["cliente_codigo", "canal"])
+    text_cols = [
+        col
+        for col in source.columns
+        if any(term in col for term in ("descripcion_lista", "lista_de_precios", "descripcion_subcanal", "subcanal", "descripcion_ramo", "ramo"))
+    ]
+    if not text_cols:
+        return pd.DataFrame(columns=["cliente_codigo", "canal"])
+    channel_text = source[text_cols].fillna("").astype(str).agg(" ".join, axis=1)
+    result = pd.DataFrame(
+        {
+            "cliente_codigo": pd.to_numeric(source[customer_col], errors="coerce").astype("Int64").astype("string"),
+            "canal": channel_text.map(sales_app.classify_customer_channel),
+        }
+    )
+    return result.dropna(subset=["cliente_codigo"]).drop_duplicates("cliente_codigo")
+
+
+def apply_bultos_customer_channels(data: pd.DataFrame, customers: pd.DataFrame) -> pd.DataFrame:
+    result = data.copy()
+    if customers.empty:
+        result["canal"] = "NO"
+        return result
+    result["cliente_codigo"] = pd.to_numeric(result["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    result = result.merge(customers, on="cliente_codigo", how="left")
+    result["canal"] = result["canal"].fillna("NO")
+    return result
+
+
 def fallback_data_folder() -> Path | None:
     for folder in [
         sales_app.PROJECT_ROOT / ".cloud_data" / "planificacion",
@@ -269,11 +395,8 @@ def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override
     data = normalize_bultos(raw, quantity_col)
 
     customer_file = sales_app.latest_customer_file_in_folder(folder) if folder is not None else None
-    if customer_file is not None:
-        customers, _ = sales_app.load_customer_channels(str(customer_file), customer_file.stat().st_mtime_ns)
-        data = sales_app.apply_customer_channels(data, customers)
-    else:
-        data["canal"] = "NO"
+    customers = load_bultos_customer_channels(customer_file)
+    data = apply_bultos_customer_channels(data, customers)
 
     aux_file = sales_app.latest_auxiliary_file_in_folder(folder) if folder is not None else None
     if aux_file is not None:
@@ -463,13 +586,12 @@ def main() -> None:
     if st.sidebar.button("Actualizar datos", width="stretch"):
         st.session_state["bultos_drive_refresh"] = time.time()
 
-    folder = sales_app.resolve_google_drive_folder(
-        "GOOGLE_DRIVE_PLANIFICACION_URL",
-        "planificacion",
+    folder = prepare_drive_sources(
+        drive_url,
         force_refresh=bool(st.session_state["bultos_drive_refresh"]),
     )
     if folder is None:
-        st.sidebar.warning("No pude leer Google Drive. Uso cache local si existe o carga manual.")
+        st.sidebar.warning("No pude leer Google Drive. Use carga manual o revise el link/permiso.")
         folder = fallback_data_folder()
     st.sidebar.caption(f"Drive: {drive_url}")
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
@@ -486,13 +608,10 @@ def main() -> None:
     if raw.empty:
         st.warning("No pude leer el archivo de bultos.")
         return
-    quantity_default = choose_quantity_column(raw)
-    quantity_options = list(raw.columns)
-    quantity_col = st.sidebar.selectbox(
-        "Columna de bultos",
-        quantity_options,
-        index=quantity_options.index(quantity_default),
-    )
+    quantity_col = choose_quantity_column(raw)
+    if clean_name(quantity_col) != clean_name(TARGET_QUANTITY_COLUMN):
+        st.error(f"El archivo debe tener la columna '{TARGET_QUANTITY_COLUMN}' para calcular bultos.")
+        return
     data, source_label, _, quantity_used = load_enriched_data(folder, uploaded_file, quantity_col)
     st.sidebar.caption(f"Columna usada: {quantity_used}")
 
