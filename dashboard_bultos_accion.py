@@ -248,6 +248,16 @@ def read_raw_source(path: Path | None, uploaded_file) -> tuple[pd.DataFrame, str
     return sales_app.read_tabular(path), path.name
 
 
+def fallback_data_folder() -> Path | None:
+    for folder in [
+        sales_app.PROJECT_ROOT / ".cloud_data" / "planificacion",
+        *getattr(sales_app, "DATA_DIR_CANDIDATES", []),
+    ]:
+        if folder.exists() and any(folder.iterdir()):
+            return folder
+    return None
+
+
 def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override: str | None = None) -> tuple[pd.DataFrame, str, list[str], str]:
     source_path = latest_bultos_file(folder)
     raw, source_label = read_raw_source(source_path, uploaded_file)
@@ -460,7 +470,7 @@ def main() -> None:
     )
     if folder is None:
         st.sidebar.warning("No pude leer Google Drive. Uso cache local si existe o carga manual.")
-        folder = sales_app.LOCAL_DATA_DIR if sales_app.LOCAL_DATA_DIR.exists() else None
+        folder = fallback_data_folder()
     st.sidebar.caption(f"Drive: {drive_url}")
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
 
