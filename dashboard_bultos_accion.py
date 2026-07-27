@@ -569,25 +569,32 @@ def status_class(value: float) -> str:
     return "bad"
 
 
-def render_summary_table(summary: pd.DataFrame) -> None:
+def render_action_table(summary: pd.DataFrame, action: str) -> None:
     if summary.empty:
         st.info("No hay clientes para los filtros seleccionados.")
         return
+    action = action.upper()
+    bultos_col = action
+    tope_col = f"tope_{action}"
+    avance_col = f"avance_{action}"
+    restante_col = f"restante_{action}"
+    title = "CORE" if action == "CORE" else "VALUE"
+    table = summary[summary[bultos_col].fillna(0) > 0].copy()
+    if table.empty:
+        st.info(f"No hay clientes con compra {title} para los filtros seleccionados.")
+        return
+    table = table.sort_values([avance_col, bultos_col], ascending=[False, False])
     rows = []
-    for _, row in summary.iterrows():
+    for _, row in table.iterrows():
         rows.append(
             "<tr>"
             f"<td>{row['cliente_codigo']}</td>"
             f"<td>{row['cliente']}</td>"
             f"<td>{row['canal_accion']}</td>"
-            f"<td>{format_num(row['CORE'])}</td>"
-            f"<td>{format_num(row['tope_CORE'])}</td>"
-            f"<td class='{status_class(row['avance_CORE'])}'>{format_pct(row['avance_CORE'])}</td>"
-            f"<td>{format_num(row['restante_CORE'])}</td>"
-            f"<td>{format_num(row['VALUE'])}</td>"
-            f"<td>{format_num(row['tope_VALUE'])}</td>"
-            f"<td class='{status_class(row['avance_VALUE'])}'>{format_pct(row['avance_VALUE'])}</td>"
-            f"<td>{format_num(row['restante_VALUE'])}</td>"
+            f"<td>{format_num(row[bultos_col])}</td>"
+            f"<td>{format_num(row[tope_col])}</td>"
+            f"<td class='{status_class(row[avance_col])}'>{format_pct(row[avance_col])}</td>"
+            f"<td>{format_num(row[restante_col])}</td>"
             f"<td>{row['supervisor']}</td>"
             f"<td>{row['vendedor']}</td>"
             f"<td>{row['ruta']}</td>"
@@ -600,8 +607,7 @@ def render_summary_table(summary: pd.DataFrame) -> None:
                 <thead>
                     <tr>
                         <th>Cod cliente</th><th>Cliente</th><th>Canal</th>
-                        <th>Core bultos</th><th>Tope Core</th><th>Avance Core</th><th>Restan Core</th>
-                        <th>Value bultos</th><th>Tope Value</th><th>Avance Value</th><th>Restan Value</th>
+                        <th>{title} bultos</th><th>Tope {title}</th><th>Avance {title}</th><th>Restan {title}</th>
                         <th>Supervisor</th><th>Vendedor</th><th>Ruta</th>
                     </tr>
                 </thead>
@@ -613,18 +619,61 @@ def render_summary_table(summary: pd.DataFrame) -> None:
     )
 
 
-def export_summary_excel(export: pd.DataFrame) -> bytes:
+def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
+    action = action.upper()
+    bultos_col = action
+    tope_col = f"tope_{action}"
+    avance_col = f"avance_{action}"
+    restante_col = f"restante_{action}"
+    return (
+        summary[summary[bultos_col].fillna(0) > 0]
+        .sort_values([avance_col, bultos_col], ascending=[False, False])
+        [[
+            "cliente_codigo",
+            "cliente",
+            "canal_accion",
+            bultos_col,
+            tope_col,
+            avance_col,
+            restante_col,
+            "supervisor",
+            "vendedor",
+            "ruta",
+        ]]
+        .rename(
+            columns={
+                "cliente_codigo": "Cod cliente",
+                "cliente": "Cliente",
+                "canal_accion": "Canal",
+                bultos_col: f"{action} bultos",
+                tope_col: f"Tope {action}",
+                avance_col: f"Avance {action} %",
+                restante_col: f"Restan {action}",
+                "supervisor": "Supervisor",
+                "vendedor": "Vendedor",
+                "ruta": "Ruta",
+            }
+        )
+    )
+
+
+def style_excel_sheet(sheet) -> None:
+    sheet.freeze_panes = "A2"
+    for cell in sheet[1]:
+        cell.font = cell.font.copy(bold=True, color="FFFFFF")
+        cell.fill = cell.fill.copy(fill_type="solid", fgColor="28549A")
+    for column_cells in sheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 10), 38)
+
+
+def export_summary_excel(core_export: pd.DataFrame, value_export: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export.to_excel(writer, sheet_name="Clientes", index=False)
-        sheet = writer.book["Clientes"]
-        sheet.freeze_panes = "A2"
-        for cell in sheet[1]:
-            cell.font = cell.font.copy(bold=True, color="FFFFFF")
-            cell.fill = cell.fill.copy(fill_type="solid", fgColor="28549A")
-        for column_cells in sheet.columns:
-            max_length = max(len(str(cell.value or "")) for cell in column_cells)
-            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 10), 38)
+        core_export.to_excel(writer, sheet_name="Core", index=False)
+        value_export.to_excel(writer, sheet_name="Value", index=False)
+        style_excel_sheet(writer.book["Core"])
+        style_excel_sheet(writer.book["Value"])
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -688,31 +737,16 @@ def main() -> None:
     summary_view = apply_summary_filters(summary)
     render_kpis(summary_view)
 
-    st.subheader("Detalle por cliente")
-    render_summary_table(summary_view)
+    st.subheader("Detalle CORE")
+    render_action_table(summary_view, "CORE")
+    st.subheader("Detalle VALUE")
+    render_action_table(summary_view, "VALUE")
 
-    export = summary_view.copy()
-    export = export.rename(
-        columns={
-            "cliente_codigo": "Cod cliente",
-            "cliente": "Cliente",
-            "canal_accion": "Canal",
-            "CORE": "Core bultos",
-            "tope_CORE": "Tope Core",
-            "avance_CORE": "Avance Core %",
-            "restante_CORE": "Restan Core",
-            "VALUE": "Value bultos",
-            "tope_VALUE": "Tope Value",
-            "avance_VALUE": "Avance Value %",
-            "restante_VALUE": "Restan Value",
-            "supervisor": "Supervisor",
-            "vendedor": "Vendedor",
-            "ruta": "Ruta",
-        }
-    )
+    core_export = export_action_table(summary_view, "CORE")
+    value_export = export_action_table(summary_view, "VALUE")
     st.download_button(
         "Exportar listado Excel",
-        data=export_summary_excel(export),
+        data=export_summary_excel(core_export, value_export),
         file_name="clientes_tope_core_value.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
