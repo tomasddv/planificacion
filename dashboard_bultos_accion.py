@@ -24,6 +24,8 @@ SEGMENTOS_ACCION = {
     "CVZA CORE": "CORE",
     "CVZA VALUE": "VALUE",
 }
+CORE_BRAND_TERMS = ("QUILMES", "BRAHMA", "BUDWEISER")
+VALUE_BRAND_TERMS = ("QUILMES 1890", "1890")
 TARGET_QUANTITY_COLUMN = "Cantidades Totales"
 
 
@@ -162,6 +164,18 @@ def format_pct(value: float | int | None) -> str:
 
 def clean_name(value: object) -> str:
     return sales_app.clean_name("" if pd.isna(value) else str(value))
+
+
+def core_brand_override(series: pd.Series) -> pd.Series:
+    text = series.fillna("").astype(str).map(sales_app.strip_accents).str.upper()
+    is_value = text.apply(lambda value: any(term in value for term in VALUE_BRAND_TERMS))
+    is_core = text.apply(lambda value: any(term in value for term in CORE_BRAND_TERMS))
+    return is_core & ~is_value
+
+
+def value_brand_override(series: pd.Series) -> pd.Series:
+    text = series.fillna("").astype(str).map(sales_app.strip_accents).str.upper()
+    return text.apply(lambda value: any(term in value for term in VALUE_BRAND_TERMS))
 
 
 def latest_bultos_file(folder: Path | None) -> Path | None:
@@ -406,6 +420,8 @@ def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override
         data["division_informe"] = "CVZA SIN SEGMENTO"
 
     data["accion"] = data["division_informe"].map(SEGMENTOS_ACCION).fillna("")
+    data.loc[core_brand_override(data["marca"]), "accion"] = "CORE"
+    data.loc[value_brand_override(data["marca"]), "accion"] = "VALUE"
     data = data[(data["unidad_negocio"] == "CZA") & data["accion"].isin(["CORE", "VALUE"])].copy()
     data["canal_accion"] = data["canal"].replace({"AUTOSERVICIO": "AS"})
     data["tope"] = data["canal"].map(TOPES_CANAL).fillna(data["canal_accion"].map(TOPES_CANAL))
@@ -463,6 +479,9 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
         values="tope",
     )
     pivot = pivot.merge(topes.add_prefix("tope_").reset_index(), on="cliente_codigo", how="left")
+    for column in ["tope_CORE", "tope_VALUE"]:
+        if column not in pivot.columns:
+            pivot[column] = np.nan
     pivot["tope_CORE"] = pivot["tope_CORE"].fillna(pivot["canal_accion"].map({"K+T": 200.0, "AS": 500.0}))
     pivot["tope_VALUE"] = pivot["tope_VALUE"].fillna(pivot["canal_accion"].map({"K+T": 200.0, "AS": 500.0}))
     pivot["avance_CORE"] = np.where(pivot["tope_CORE"] > 0, pivot["CORE"] / pivot["tope_CORE"] * 100, np.nan)
@@ -478,6 +497,44 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
         default="Pendiente",
     )
     return pivot.sort_values(["estado", "avance_CORE", "avance_VALUE"], ascending=[True, False, False])
+
+
+def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    result = summary.copy()
+    st.sidebar.markdown("### Control de topes")
+    code_search = st.sidebar.text_input("Buscar codigo de cliente", value="", placeholder="Ej: 3270")
+    if code_search.strip():
+        terms = [term.strip() for term in code_search.replace(";", ",").replace(" ", ",").split(",") if term.strip()]
+        if terms:
+            code_text = result["cliente_codigo"].fillna("").astype(str)
+            result = result[code_text.apply(lambda value: any(term in value for term in terms))]
+
+    tope_filter = st.sidebar.selectbox(
+        "Estado de tope",
+        [
+            "Todos",
+            "Llegaron al tope Core",
+            "Llegaron al tope Value",
+            "Llegaron a algun tope",
+            "Llegaron a ambos topes",
+            "No llegaron a ningun tope",
+        ],
+    )
+    core_done = result["avance_CORE"] >= 100
+    value_done = result["avance_VALUE"] >= 100
+    if tope_filter == "Llegaron al tope Core":
+        result = result[core_done]
+    elif tope_filter == "Llegaron al tope Value":
+        result = result[value_done]
+    elif tope_filter == "Llegaron a algun tope":
+        result = result[core_done | value_done]
+    elif tope_filter == "Llegaron a ambos topes":
+        result = result[core_done & value_done]
+    elif tope_filter == "No llegaron a ningun tope":
+        result = result[~core_done & ~value_done]
+    return result
 
 
 def render_kpis(summary: pd.DataFrame) -> None:
@@ -565,6 +622,22 @@ def chart_layout(fig):
     return fig
 
 
+def export_summary_excel(export: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        export.to_excel(writer, sheet_name="Clientes", index=False)
+        sheet = writer.book["Clientes"]
+        sheet.freeze_panes = "A2"
+        for cell in sheet[1]:
+            cell.font = cell.font.copy(bold=True, color="FFFFFF")
+            cell.fill = cell.fill.copy(fill_type="solid", fgColor="28549A")
+        for column_cells in sheet.columns:
+            max_length = max(len(str(cell.value or "")) for cell in column_cells)
+            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 10), 38)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
     inject_style()
@@ -621,7 +694,8 @@ def main() -> None:
 
     filtered = apply_filters(data)
     summary = build_customer_summary(filtered)
-    render_kpis(summary)
+    summary_view = apply_summary_filters(summary)
+    render_kpis(summary_view)
 
     left, right = st.columns(2)
     with left:
@@ -637,7 +711,7 @@ def main() -> None:
         )
         st.plotly_chart(chart_layout(fig), width="stretch")
     with right:
-        top_clients = summary.assign(total_bultos=summary["CORE"] + summary["VALUE"]).nlargest(15, "total_bultos")
+        top_clients = summary_view.assign(total_bultos=summary_view["CORE"] + summary_view["VALUE"]).nlargest(15, "total_bultos")
         fig = px.bar(
             top_clients,
             x="total_bultos",
@@ -650,9 +724,9 @@ def main() -> None:
         st.plotly_chart(chart_layout(fig), width="stretch")
 
     st.subheader("Detalle por cliente")
-    render_summary_table(summary)
+    render_summary_table(summary_view)
 
-    export = summary.copy()
+    export = summary_view.copy()
     export = export.rename(
         columns={
             "cliente_codigo": "Cod cliente",
@@ -671,10 +745,10 @@ def main() -> None:
         }
     )
     st.download_button(
-        "Descargar detalle CSV",
-        data=export.to_csv(index=False).encode("utf-8-sig"),
-        file_name="control_bultos_core_value.csv",
-        mime="text/csv",
+        "Exportar listado Excel",
+        data=export_summary_excel(export),
+        file_name="clientes_tope_core_value.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",
     )
 
