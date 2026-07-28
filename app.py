@@ -567,10 +567,10 @@ def latest_matching_file(folder: Path, include_terms: tuple[str, ...], exclude_t
 
 
 def latest_daily_file_in_folder(folder: Path) -> Path | None:
-    preferred = latest_matching_file(folder, ("venta",), ("anual",))
+    preferred = latest_matching_file(folder, ("venta",), ("anual", "bulto", "bultos"))
     if preferred is not None:
         return preferred
-    return latest_matching_file(folder, tuple(), ("anual",))
+    return latest_matching_file(folder, tuple(), ("anual", "bulto", "bultos"))
 
 
 def latest_annual_file_in_folder(folder: Path) -> Path | None:
