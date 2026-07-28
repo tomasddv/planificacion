@@ -490,8 +490,8 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
     pivot["tope_VALUE"] = pivot["tope_VALUE"].fillna(pivot["canal_accion"].map({"K+T": 200.0, "AS": 500.0}))
     pivot["avance_CORE"] = np.where(pivot["tope_CORE"] > 0, pivot["CORE"] / pivot["tope_CORE"] * 100, np.nan)
     pivot["avance_VALUE"] = np.where(pivot["tope_VALUE"] > 0, pivot["VALUE"] / pivot["tope_VALUE"] * 100, np.nan)
-    pivot["restante_CORE"] = (pivot["tope_CORE"] - pivot["CORE"]).clip(lower=0)
-    pivot["restante_VALUE"] = (pivot["tope_VALUE"] - pivot["VALUE"]).clip(lower=0)
+    pivot["restante_CORE"] = pivot["tope_CORE"] - pivot["CORE"]
+    pivot["restante_VALUE"] = pivot["tope_VALUE"] - pivot["VALUE"]
     pivot["estado"] = np.select(
         [
             (pivot["avance_CORE"] >= 100) & (pivot["avance_VALUE"] >= 100),
@@ -524,10 +524,16 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
             "Llegaron a algun tope",
             "Llegaron a ambos topes",
             "No llegaron a ningun tope",
+            "Faltan hasta 50 Core",
+            "Faltan hasta 50 Value",
+            "Faltan hasta 50 en alguno",
+            "Faltan hasta 50 en ambos",
         ],
     )
     core_done = result["avance_CORE"] >= 100
     value_done = result["avance_VALUE"] >= 100
+    core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
+    value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
     if tope_filter == "Llegaron al tope Core":
         result = result[core_done]
     elif tope_filter == "Llegaron al tope Value":
@@ -538,6 +544,14 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
         result = result[core_done & value_done]
     elif tope_filter == "No llegaron a ningun tope":
         result = result[~core_done & ~value_done]
+    elif tope_filter == "Faltan hasta 50 Core":
+        result = result[core_within_50]
+    elif tope_filter == "Faltan hasta 50 Value":
+        result = result[value_within_50]
+    elif tope_filter == "Faltan hasta 50 en alguno":
+        result = result[core_within_50 | value_within_50]
+    elif tope_filter == "Faltan hasta 50 en ambos":
+        result = result[core_within_50 & value_within_50]
     return result
 
 
