@@ -500,9 +500,6 @@ def load_dataset(base_dir: str):
         rutas["nombre_fantasia"] = ""
         rutas["licencia_alcohol"] = ""
     ventas = load_ventas(ventas_path, brand_map, mix_map, caliber_map)
-    if ventas_anual_path is not None and ventas_anual_path.exists():
-        ventas_anual = load_ventas(ventas_anual_path, brand_map, mix_map, caliber_map)
-        ventas = pd.concat([ventas_anual, ventas], ignore_index=True).drop_duplicates()
     rutas = rutas[~rutas["vendedor"].isin(EXCLUDED_VENDORS)].copy()
     ventas = ventas[~ventas["vendedor"].isin(EXCLUDED_VENDORS)].copy()
     promotores_venta = ventas[["vendedor", "promotor", "supervisor"]].drop_duplicates("vendedor")

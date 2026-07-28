@@ -1699,6 +1699,9 @@ if view == "Gestión CNC":
             cnc_view["Nombre Fantasía"].ne(""),
             cnc_view["Razón Social"],
         )
+    if "Fecha Alta" in cnc_view.columns:
+        fecha_alta = pd.to_datetime(cnc_view["Fecha Alta"], errors="coerce")
+        cnc_view["Fecha Alta"] = fecha_alta.dt.date.astype(str).replace("NaT", "")
     display_cols = [
         "Grupo",
         "Ruta",
