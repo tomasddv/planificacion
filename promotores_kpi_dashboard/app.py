@@ -34,6 +34,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "reporte de clientes.xlsx": "1ZR9WOeqpaq9t-mJZM4f9AlUV7BIrKVo-",
+    "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
     "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
@@ -706,6 +707,126 @@ def business_mask(ventas_df: pd.DataFrame, business: str):
     return pd.Series(True, index=ventas_df.index)
 
 
+def cnc_business_options():
+    return ["CZA", "NABS", "MATCH", "AGUAS", "MARKETPLACE", "Todos"]
+
+
+def cnc_business_mask(ventas_df: pd.DataFrame, business: str):
+    division = ventas_df["division"].fillna("").str.upper()
+    unidad = ventas_df["unidad_negocio"].fillna("").str.upper() if "unidad_negocio" in ventas_df.columns else pd.Series("", index=ventas_df.index)
+    marca = ventas_df["marca"].fillna("").str.upper() if "marca" in ventas_df.columns else pd.Series("", index=ventas_df.index)
+    producto = ventas_df["producto"].fillna("").str.upper() if "producto" in ventas_df.columns else pd.Series("", index=ventas_df.index)
+    if business == "CZA":
+        return division.isin(["CERVEZAS", "ENV CERVEZAS"])
+    if business == "NABS":
+        return division.isin(["GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES"])
+    if business == "MATCH":
+        return (
+            division.str.contains("MATCH", na=False)
+            | unidad.str.contains("MATCH", na=False)
+            | marca.str.contains("MATCH", na=False)
+            | producto.str.contains("MATCH", na=False)
+        )
+    if business == "AGUAS":
+        return division.eq("AGUAS")
+    if business == "MARKETPLACE":
+        return division.str.contains("MKTPLACE|MARKETPLACE", na=False) | unidad.str.contains("MARKETPLACE", na=False)
+    return pd.Series(True, index=ventas_df.index)
+
+
+def filter_cnc_purchase_range(
+    ventas_df: pd.DataFrame,
+    start_date,
+    end_date,
+    business: str,
+    rutas_base: pd.DataFrame | None = None,
+    route: str = "Todas",
+):
+    filtered = ventas_df[(ventas_df["fecha"].ge(pd.Timestamp(start_date))) & (ventas_df["fecha"].le(pd.Timestamp(end_date)))].copy()
+    if business != "Todos":
+        filtered = filtered[cnc_business_mask(filtered, business)]
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    return filtered
+
+
+def cnc_horizon_start(end_date, horizon: str):
+    months = {"U3M": 3, "U6M": 6, "U12M": 12}.get(horizon, 3)
+    return pd.Timestamp(end_date) - pd.DateOffset(months=months) + pd.Timedelta(days=1)
+
+
+def last_purchase_by_business(ventas_df: pd.DataFrame, end_date, business: str, rutas_base: pd.DataFrame, route: str):
+    filtered = ventas_df[ventas_df["fecha"].le(pd.Timestamp(end_date))].copy()
+    if business != "Todos":
+        filtered = filtered[cnc_business_mask(filtered, business)]
+    if rutas_base is not None and not rutas_base.empty:
+        route_scope = rutas_base.copy()
+        if route != "Todas":
+            route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
+        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+    if filtered.empty:
+        return pd.DataFrame(columns=["vendedor", "cliente", "ultima_compra_negocio"])
+    return (
+        filtered.groupby(["vendedor", "cliente"], as_index=False)
+        .agg(ultima_compra_negocio=("fecha", "max"))
+    )
+
+
+def cnc_action_fields(horizon: str, business: str):
+    if horizon == "U3M" and business in {"CZA", "NABS"}:
+        return (
+            "Asignar tarea mensual BEES Force/PDA",
+            "Relevar motivo de no compra",
+            "Mensual",
+            "Nivel 1",
+            "100%",
+        )
+    if horizon == "U12M":
+        return (
+            "Asignar frecuencia de contacto",
+            "Mensual 0.25; Censo quincenal 0.50 si corresponde",
+            "Mensual",
+            "Nivel 1",
+            "100%",
+        )
+    return (
+        "Seguimiento mensual de recupero",
+        "Identificar motivo y oportunidad de recupero",
+        "Mensual",
+        "Nivel 1",
+        "100%",
+    )
+
+
+def cnc_management_table(cnc_table: pd.DataFrame, ventas_df: pd.DataFrame, end_date, horizon: str, business: str, rutas_base: pd.DataFrame, route: str):
+    table = cnc_table.copy()
+    if table.empty:
+        return table
+    last_purchase = last_purchase_by_business(ventas_df, end_date, business, rutas_base, route)
+    table = table.merge(last_purchase, on=["vendedor", "cliente"], how="left")
+    table["ultima_compra_negocio"] = pd.to_datetime(table["ultima_compra_negocio"], errors="coerce")
+    table["dias_sin_compra"] = (pd.Timestamp(end_date) - table["ultima_compra_negocio"]).dt.days
+    table["dias_sin_compra"] = table["dias_sin_compra"].fillna(9999).astype(int)
+    accion, motivo, frecuencia, nivel, alcance = cnc_action_fields(horizon, business)
+    table["negocio"] = business
+    table["horizonte"] = horizon
+    table["accion_requerida"] = accion
+    table["motivo_a_relevar"] = motivo
+    table["frecuencia_contacto"] = frecuencia
+    table["nivel_auditoria"] = nivel
+    table["alcance_objetivo"] = alcance
+    table["responsable"] = table["promotor"]
+    table["ultima_compra_negocio"] = table["ultima_compra_negocio"].dt.date.astype(str).replace("NaT", "Sin compra")
+    return table
+
+
 def apply_promoter_filter(df: pd.DataFrame, promoter: str):
     if promoter == "Todos" or df.empty or "promotor" not in df.columns:
         return df
@@ -889,7 +1010,7 @@ route_options = ["Todas"] + route_groups
 
 view = st.radio(
     "Vista",
-    ["Acumulado mensual", "Planificación diaria", "No compradores", "No compradores SKU"],
+    ["Acumulado mensual", "Planificación diaria", "No compradores", "No compradores SKU", "Gestión CNC"],
     horizontal=True,
     label_visibility="collapsed",
     key="main_view",
@@ -1451,6 +1572,149 @@ if view == "No compradores SKU":
             sku_view["Razón Social"],
         )
     st.dataframe(sku_view, use_container_width=True, hide_index=True)
+
+if view == "Gestión CNC":
+    supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
+    cnc_cols = st.columns([1.05, 1.15, 1.1, 1.25, 1.35, 1.25, 1.7])
+    with cnc_cols[0]:
+        cnc_horizon = st.selectbox("Horizonte", ["U3M", "U6M", "U12M"], index=0, key="cnc_horizon")
+    with cnc_cols[1]:
+        cnc_end = st.date_input("Fecha corte", value=max(fechas), min_value=min(fechas), max_value=max(fechas), key="cnc_end")
+    with cnc_cols[2]:
+        cnc_route = st.selectbox("Grupo ruta", route_options, index=0, key="cnc_route")
+    with cnc_cols[3]:
+        cnc_supervisor = st.selectbox("Supervisor", supervisor_options, index=0, key="cnc_supervisor")
+    with cnc_cols[4]:
+        cnc_promoter_options = promoter_options_for(promotores, cnc_supervisor)
+        cnc_promoter = st.selectbox("Promotor", cnc_promoter_options, index=0, key="cnc_promoter")
+    with cnc_cols[5]:
+        cnc_business = st.selectbox("Negocio", cnc_business_options(), index=0, key="cnc_business")
+    with cnc_cols[6]:
+        st.caption("CNC = cliente de ruta sin compra del negocio durante el horizonte seleccionado.")
+
+    with st.spinner("Preparando base historica CNC..."):
+        cnc_sources, cnc_status = resolve_closed_month_sales_files(force_refresh=force_drive_refresh)
+    cnc_history = ventas.copy()
+    if cnc_sources:
+        cnc_signature = tuple((str(path), path.stat().st_mtime, path.stat().st_size) for path in cnc_sources)
+        cnc_historical = cached_load_historical_sales(
+            tuple(str(path) for path in cnc_sources),
+            str(dataset["sources"]["auxiliares"]),
+            (
+                cnc_signature,
+                str(dataset["sources"]["auxiliares"]),
+                Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
+            ),
+        )
+        cnc_history = pd.concat([cnc_historical, ventas], ignore_index=True).drop_duplicates()
+    else:
+        st.warning(f"No se encontro venta historica completa. Se calcula con la venta cargada actual. {cnc_status}")
+    if not cnc_history.empty:
+        history_min = pd.Timestamp(cnc_history["fecha"].min()).date()
+        history_max = pd.Timestamp(cnc_history["fecha"].max()).date()
+        st.caption(f"Histórico usado: {history_min} a {history_max} · {cnc_status}")
+
+    cnc_end_ts = pd.Timestamp(cnc_end)
+    cnc_start = cnc_horizon_start(cnc_end_ts, cnc_horizon)
+    cnc_rutas_base = apply_supervisor_filter(rutas_grupo, cnc_supervisor)
+    cnc_rutas_base = apply_promoter_filter(cnc_rutas_base, cnc_promoter)
+    if cnc_business == "CZA":
+        cnc_rutas_base = cnc_rutas_base[cnc_rutas_base["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
+    cnc_filtered = filter_cnc_purchase_range(cnc_history, cnc_start, cnc_end_ts, cnc_business, cnc_rutas_base, cnc_route)
+    cnc_filtered = apply_supervisor_filter(cnc_filtered, cnc_supervisor)
+    cnc_filtered = apply_promoter_filter(cnc_filtered, cnc_promoter)
+    cnc_base = non_buyer_clients(cnc_filtered, cnc_rutas_base, cnc_route)
+    cnc_table = cnc_management_table(cnc_base, cnc_history, cnc_end_ts, cnc_horizon, cnc_business, cnc_rutas_base, cnc_route)
+
+    st.subheader("Gestión de clientes no compradores")
+    st.caption(f"Horizonte {cnc_horizon}: {cnc_start.date()} a {cnc_end_ts.date()} · Negocio {cnc_business}")
+    cnc_metric_cols = st.columns(5)
+    route_total = route_customer_count(cnc_rutas_base, cnc_route)
+    buyers_total = cnc_filtered[["vendedor", "cliente"]].drop_duplicates().shape[0]
+    cnc_total = len(cnc_table)
+    coverage = 1 if cnc_total else 0
+    cnc_metric_cols[0].metric("Clientes ruta", f"{route_total:,}")
+    cnc_metric_cols[1].metric("Compradores negocio", f"{buyers_total:,}")
+    cnc_metric_cols[2].metric("CNC", f"{cnc_total:,}")
+    cnc_metric_cols[3].metric("Nivel auditoría", "1" if coverage else "0")
+    cnc_metric_cols[4].metric("Alcance objetivo", "100%" if coverage else "0%")
+
+    if cnc_horizon == "U3M" and cnc_business in {"CZA", "NABS"}:
+        st.info("Para U3M en CZA/NABS corresponde asignar tarea mensual en BEES Force/PDA y relevar motivo de no compra.")
+    if cnc_horizon == "U12M":
+        st.info("Para U12M corresponde frecuencia de contacto mensual 0.25; si hay oportunidad por Censo, frecuencia quincenal 0.50.")
+
+    if not cnc_table.empty:
+        st.subheader("Resumen por promotor")
+        cnc_summary = (
+            cnc_table.groupby(["supervisor", "promotor"], as_index=False)
+            .agg(cnc=("cliente", "nunique"))
+            .sort_values(["supervisor", "cnc", "promotor"], ascending=[True, False, True])
+        )
+        st.dataframe(
+            cnc_summary.rename(columns={"supervisor": "Supervisor", "promotor": "Promotor", "cnc": "CNC"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    cnc_view = cnc_table.rename(
+        columns={
+            "grupo_ruta": "Grupo",
+            "ruta": "Ruta",
+            "supervisor": "Supervisor",
+            "promotor": "Promotor",
+            "vendedor": "Vnd.",
+            "cliente": "Cliente",
+            "razon_social": "Razón Social",
+            "nombre_fantasia": "Nombre Fantasía",
+            "negocio": "Negocio",
+            "horizonte": "Horizonte",
+            "ultima_compra_negocio": "Última Compra Negocio",
+            "dias_sin_compra": "Días Sin Compra",
+            "accion_requerida": "Acción Requerida",
+            "motivo_a_relevar": "Motivo a Relevar",
+            "frecuencia_contacto": "Frecuencia Contacto",
+            "nivel_auditoria": "Nivel Auditoría",
+            "alcance_objetivo": "Alcance Objetivo",
+            "responsable": "Responsable",
+        }
+    )
+    if "Nombre Fantasía" in cnc_view.columns and "Razón Social" in cnc_view.columns:
+        cnc_view["Nombre Fantasía"] = cnc_view["Nombre Fantasía"].fillna("")
+        cnc_view["Nombre Fantasía"] = cnc_view["Nombre Fantasía"].where(
+            cnc_view["Nombre Fantasía"].ne(""),
+            cnc_view["Razón Social"],
+        )
+    display_cols = [
+        "Grupo",
+        "Ruta",
+        "Supervisor",
+        "Promotor",
+        "Vnd.",
+        "Cliente",
+        "Razón Social",
+        "Nombre Fantasía",
+        "Negocio",
+        "Horizonte",
+        "Última Compra Negocio",
+        "Días Sin Compra",
+        "Acción Requerida",
+        "Motivo a Relevar",
+        "Frecuencia Contacto",
+        "Nivel Auditoría",
+        "Alcance Objetivo",
+        "Responsable",
+    ]
+    st.subheader("Base de gestión CNC")
+    st.dataframe(cnc_view[[col for col in display_cols if col in cnc_view.columns]], use_container_width=True, hide_index=True)
+    csv_data = cnc_view[[col for col in display_cols if col in cnc_view.columns]].to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "Descargar base CNC",
+        data=csv_data,
+        file_name=f"gestion_cnc_{cnc_business}_{cnc_horizon}_{cnc_end_ts.date()}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 with st.expander("Fuentes cargadas"):
     for label, path in dataset["sources"].items():
