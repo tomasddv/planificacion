@@ -534,6 +534,15 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
     value_done = result["avance_VALUE"] >= 100
     core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
     value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
+
+    st.sidebar.markdown("### Faltante cercano")
+    only_within_50 = st.sidebar.checkbox("Solo clientes que faltan 50 bultos o menos", value=False)
+    within_50_action = st.sidebar.selectbox(
+        "Aplicar faltante a",
+        ["Core o Value", "Core", "Value", "Core y Value"],
+        disabled=not only_within_50,
+    )
+
     if tope_filter == "Llegaron al tope Core":
         result = result[core_done]
     elif tope_filter == "Llegaron al tope Value":
@@ -552,6 +561,18 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
         result = result[core_within_50 | value_within_50]
     elif tope_filter == "Faltan hasta 50 en ambos":
         result = result[core_within_50 & value_within_50]
+
+    if only_within_50:
+        core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
+        value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
+        if within_50_action == "Core":
+            result = result[core_within_50]
+        elif within_50_action == "Value":
+            result = result[value_within_50]
+        elif within_50_action == "Core y Value":
+            result = result[core_within_50 & value_within_50]
+        else:
+            result = result[core_within_50 | value_within_50]
     return result
 
 
