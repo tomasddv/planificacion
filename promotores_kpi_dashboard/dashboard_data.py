@@ -184,6 +184,7 @@ def load_rutas(path: Path):
                 "vi": clean_text(row.get("VI")),
                 "sa": clean_text(row.get("SA")),
                 "do": clean_text(row.get("DO")),
+                "alta_fecha": pd.NaT,
             }
         )
     return pd.DataFrame(rows)
@@ -236,6 +237,10 @@ def first_existing_column(df: pd.DataFrame, patterns: tuple[str, ...]):
     return None
 
 
+def parse_client_date(value):
+    return pd.to_datetime(value, errors="coerce")
+
+
 def route_flags_from_visit_day(value):
     text = clean_text(value).upper()
     flags = {"lu": "", "ma": "", "mi": "", "ju": "", "vi": "", "sa": "", "do": ""}
@@ -278,7 +283,7 @@ def route_flags_from_visit_day(value):
 
 
 def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores: pd.DataFrame):
-    columns = ["vendedor", "ruta", "cliente", "razon_social", "lu", "ma", "mi", "ju", "vi", "sa", "do"]
+    columns = ["vendedor", "ruta", "cliente", "razon_social", "lu", "ma", "mi", "ju", "vi", "sa", "do", "alta_fecha"]
     if path is None or not path.exists():
         return pd.DataFrame(columns=columns)
     report = pd.read_excel(path, dtype=str)
@@ -289,6 +294,7 @@ def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores:
     cliente_col = first_existing_column(report, ("COD. CLIENTE", "COD CLIENTE", "CODIGO CLIENTE", "CÓDIGO CLIENTE", "CLIENTE"))
     razon_col = first_existing_column(report, ("RAZON SOCIAL", "RAZÓN SOCIAL", "DESCRIPCION", "DESCRIPCIÓN", "CLIENTE"))
     ruta_col = first_existing_column(report, ("RUTA DE VENTA", "RUTA"))
+    alta_col = first_existing_column(report, ("ALTA FECHA", "FECHA DE ALTA"))
     if promotor_col is None or dia_col is None or cliente_col is None:
         return pd.DataFrame(columns=columns)
     promotores_lookup = promotores.dropna(subset=["promotor"]).drop_duplicates("promotor")
@@ -310,6 +316,7 @@ def load_reporte_clientes(path: Path | None, clientes: pd.DataFrame, promotores:
                 "ruta": clean_code(row.get(ruta_col)) if ruta_col is not None else vendedor,
                 "cliente": cliente,
                 "razon_social": clean_text(row.get(razon_col)) if razon_col is not None else "",
+                "alta_fecha": parse_client_date(row.get(alta_col)) if alta_col is not None else pd.NaT,
                 **flags,
             }
         )
@@ -429,6 +436,7 @@ def build_route_groups(rutas: pd.DataFrame, promotores: pd.DataFrame):
                     "razon_social": row["razon_social"],
                     "nombre_fantasia": row.get("nombre_fantasia", ""),
                     "licencia_alcohol": row.get("licencia_alcohol", ""),
+                    "alta_fecha": row.get("alta_fecha", pd.NaT),
                     "dia": day_label,
                     "grupo_ruta": DAY_GROUPS.get(day_label, "OTROS"),
                 }
@@ -444,6 +452,7 @@ def build_route_groups(rutas: pd.DataFrame, promotores: pd.DataFrame):
                 "razon_social",
                 "nombre_fantasia",
                 "licencia_alcohol",
+                "alta_fecha",
                 "dia",
                 "grupo_ruta",
             ]

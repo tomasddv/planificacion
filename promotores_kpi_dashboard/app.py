@@ -761,6 +761,16 @@ def cnc_horizon_start(end_date, horizon: str):
     return pd.Timestamp(end_date) - pd.DateOffset(months=months) + pd.Timedelta(days=1)
 
 
+def filter_routes_active_at_horizon_start(rutas_df: pd.DataFrame, start_date):
+    if rutas_df.empty or "alta_fecha" not in rutas_df.columns:
+        return rutas_df.copy(), 0
+    scoped = rutas_df.copy()
+    alta = pd.to_datetime(scoped["alta_fecha"], errors="coerce")
+    eligible = alta.isna() | alta.le(pd.Timestamp(start_date))
+    excluded = scoped.loc[~eligible, ["vendedor", "cliente"]].drop_duplicates().shape[0]
+    return scoped[eligible].copy(), excluded
+
+
 def last_purchase_by_business(ventas_df: pd.DataFrame, end_date, business: str, rutas_base: pd.DataFrame, route: str):
     filtered = ventas_df[ventas_df["fecha"].le(pd.Timestamp(end_date))].copy()
     if business != "Todos":
@@ -1620,6 +1630,7 @@ if view == "Gestión CNC":
     cnc_rutas_base = apply_promoter_filter(cnc_rutas_base, cnc_promoter)
     if cnc_business == "CZA":
         cnc_rutas_base = cnc_rutas_base[cnc_rutas_base["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
+    cnc_rutas_base, excluded_by_alta = filter_routes_active_at_horizon_start(cnc_rutas_base, cnc_start)
     cnc_filtered = filter_cnc_purchase_range(cnc_history, cnc_start, cnc_end_ts, cnc_business, cnc_rutas_base, cnc_route)
     cnc_filtered = apply_supervisor_filter(cnc_filtered, cnc_supervisor)
     cnc_filtered = apply_promoter_filter(cnc_filtered, cnc_promoter)
@@ -1628,6 +1639,8 @@ if view == "Gestión CNC":
 
     st.subheader("Gestión de clientes no compradores")
     st.caption(f"Horizonte {cnc_horizon}: {cnc_start.date()} a {cnc_end_ts.date()} · Negocio {cnc_business}")
+    if excluded_by_alta:
+        st.caption(f"Excluidos por alta posterior al inicio del horizonte: {excluded_by_alta:,} clientes.")
     cnc_metric_cols = st.columns(5)
     route_total = route_customer_count(cnc_rutas_base, cnc_route)
     buyers_total = cnc_filtered[["vendedor", "cliente"]].drop_duplicates().shape[0]
@@ -1667,6 +1680,7 @@ if view == "Gestión CNC":
             "cliente": "Cliente",
             "razon_social": "Razón Social",
             "nombre_fantasia": "Nombre Fantasía",
+            "alta_fecha": "Fecha Alta",
             "negocio": "Negocio",
             "horizonte": "Horizonte",
             "ultima_compra_negocio": "Última Compra Negocio",
@@ -1694,6 +1708,7 @@ if view == "Gestión CNC":
         "Cliente",
         "Razón Social",
         "Nombre Fantasía",
+        "Fecha Alta",
         "Negocio",
         "Horizonte",
         "Última Compra Negocio",
