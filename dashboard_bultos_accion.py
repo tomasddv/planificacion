@@ -118,7 +118,7 @@ def inject_style() -> None:
         .loading-truck {
             position: absolute;
             z-index: 1;
-            left: -120px;
+            right: -120px;
             bottom: 8px;
             width: 96px;
             animation: drive-across 2.8s linear infinite;
@@ -134,8 +134,8 @@ def inject_style() -> None:
             display: block;
         }
         @keyframes drive-across {
-            from { transform: translateX(-120px); }
-            to { transform: translateX(calc(100vw + 180px)); }
+            from { transform: translateX(120px); }
+            to { transform: translateX(calc(-100vw - 180px)); }
         }
         .kpi-grid {
             display: grid;
