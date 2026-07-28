@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import shutil
 import time
@@ -8,11 +9,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 import app as sales_app
 
 
 APP_TITLE = "Control bultos Core / Value"
+TRUCK_ICON_PATH = Path(__file__).resolve().parent / "assets" / "distribuidora_del_valle_truck.png"
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
 TOPES_CANAL = {
     "K+T": 200.0,
@@ -26,6 +29,31 @@ SEGMENTOS_ACCION = {
 CORE_BRAND_TERMS = ("QUILMES", "BRAHMA", "BUDWEISER")
 VALUE_BRAND_TERMS = ("QUILMES 1890", "1890")
 TARGET_QUANTITY_COLUMN = "Cantidades Totales"
+
+
+def page_icon():
+    try:
+        return Image.open(TRUCK_ICON_PATH)
+    except Exception:
+        return "🚚"
+
+
+def truck_icon_data_uri() -> str:
+    try:
+        encoded = base64.b64encode(TRUCK_ICON_PATH.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+def loading_truck_html() -> str:
+    src = truck_icon_data_uri()
+    truck = f"<img src='{src}' alt='Distribuidora del Valle'>" if src else "<span>🚚</span>"
+    return f"""
+    <div class="loading-road" aria-label="Cargando datos">
+        <div class="loading-truck">{truck}</div>
+    </div>
+    """
 
 
 def inject_style() -> None:
@@ -67,6 +95,48 @@ def inject_style() -> None:
         }
         .hero h1 { margin: 0; font-size: 2rem; color: white; }
         .hero p { margin: .65rem 0 0; color: white; font-weight: 600; }
+        .loading-road {
+            position: relative;
+            height: 78px;
+            margin: .4rem 0 1rem;
+            overflow: hidden;
+            border-radius: 8px;
+            background:
+                linear-gradient(90deg, rgba(20,99,255,.10), rgba(18,183,106,.14)),
+                repeating-linear-gradient(90deg, transparent 0 58px, rgba(16,24,40,.12) 58px 82px);
+            border: 1px solid rgba(16,24,40,.10);
+            box-shadow: 0 12px 26px rgba(16,24,40,.08);
+        }
+        .loading-road::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 14px;
+            border-bottom: 5px dashed rgba(15,23,42,.28);
+        }
+        .loading-truck {
+            position: absolute;
+            z-index: 1;
+            left: -120px;
+            bottom: 8px;
+            width: 96px;
+            animation: drive-across 2.8s linear infinite;
+        }
+        .loading-truck img {
+            width: 96px;
+            height: 96px;
+            object-fit: contain;
+            display: block;
+        }
+        .loading-truck span {
+            font-size: 56px;
+            display: block;
+        }
+        @keyframes drive-across {
+            from { transform: translateX(-120px); }
+            to { transform: translateX(calc(100vw + 180px)); }
+        }
         .kpi-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -507,6 +577,8 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return summary
     result = summary.copy()
+    result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
+    result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
     st.sidebar.markdown("### Control de topes")
     code_search = st.sidebar.text_input("Buscar codigo de cliente", value="", placeholder="Ej: 3270")
     if code_search.strip():
@@ -555,24 +627,40 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
         result = result[~core_done & ~value_done]
     elif tope_filter == "Faltan hasta 50 Core":
         result = result[core_within_50]
+        result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
+        result["mostrar_VALUE"] = False
     elif tope_filter == "Faltan hasta 50 Value":
         result = result[value_within_50]
+        result["mostrar_CORE"] = False
+        result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
     elif tope_filter == "Faltan hasta 50 en alguno":
         result = result[core_within_50 | value_within_50]
+        result["mostrar_CORE"] = result["CORE"].fillna(0).gt(0) & result["restante_CORE"].between(0, 50, inclusive="both")
+        result["mostrar_VALUE"] = result["VALUE"].fillna(0).gt(0) & result["restante_VALUE"].between(0, 50, inclusive="both")
     elif tope_filter == "Faltan hasta 50 en ambos":
         result = result[core_within_50 & value_within_50]
+        result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
+        result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
 
     if only_within_50:
         core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
         value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
         if within_50_action == "Core":
             result = result[core_within_50]
+            result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
+            result["mostrar_VALUE"] = False
         elif within_50_action == "Value":
             result = result[value_within_50]
+            result["mostrar_CORE"] = False
+            result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
         elif within_50_action == "Core y Value":
             result = result[core_within_50 & value_within_50]
+            result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
+            result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
         else:
             result = result[core_within_50 | value_within_50]
+            result["mostrar_CORE"] = result["CORE"].fillna(0).gt(0) & result["restante_CORE"].between(0, 50, inclusive="both")
+            result["mostrar_VALUE"] = result["VALUE"].fillna(0).gt(0) & result["restante_VALUE"].between(0, 50, inclusive="both")
     return result
 
 
@@ -613,8 +701,12 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
     tope_col = f"tope_{action}"
     avance_col = f"avance_{action}"
     restante_col = f"restante_{action}"
+    visible_col = f"mostrar_{action}"
     title = "CORE" if action == "CORE" else "VALUE"
-    table = summary[summary[bultos_col].fillna(0) > 0].copy()
+    if visible_col in summary.columns:
+        table = summary[summary[visible_col].fillna(False)].copy()
+    else:
+        table = summary[summary[bultos_col].fillna(0) > 0].copy()
     if table.empty:
         st.info(f"No hay clientes con compra {title} para los filtros seleccionados.")
         return
@@ -660,8 +752,13 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
     tope_col = f"tope_{action}"
     avance_col = f"avance_{action}"
     restante_col = f"restante_{action}"
+    visible_col = f"mostrar_{action}"
+    if visible_col in summary.columns:
+        source = summary[summary[visible_col].fillna(False)].copy()
+    else:
+        source = summary[summary[bultos_col].fillna(0) > 0].copy()
     return (
-        summary[summary[bultos_col].fillna(0) > 0]
+        source
         .sort_values([avance_col, bultos_col], ascending=[False, False])
         [[
             "cliente_codigo",
@@ -714,7 +811,7 @@ def export_summary_excel(core_export: pd.DataFrame, value_export: pd.DataFrame) 
 
 
 def main() -> None:
-    st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
+    st.set_page_config(page_title=APP_TITLE, page_icon=page_icon(), layout="wide")
     inject_style()
 
     st.markdown(
@@ -726,6 +823,8 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+    loading_placeholder = st.empty()
+    loading_placeholder.markdown(loading_truck_html(), unsafe_allow_html=True)
 
     st.sidebar.header("Datos")
     if "bultos_drive_refresh" not in st.session_state:
@@ -749,21 +848,26 @@ def main() -> None:
     if source_path is not None:
         st.sidebar.success(f"Fuente: {source_path.name}")
     elif uploaded_file is None:
+        loading_placeholder.empty()
         st.warning("No encontre archivo con nombre 'ventadiaria bultos' en la carpeta. Subilo al Drive o cargalo manualmente.")
         return
 
     raw, source_label = read_raw_source(source_path, uploaded_file)
     if raw.empty:
+        loading_placeholder.empty()
         st.warning("No pude leer el archivo de bultos.")
         return
     quantity_col = choose_quantity_column(raw)
     if clean_name(quantity_col) != clean_name(TARGET_QUANTITY_COLUMN):
+        loading_placeholder.empty()
         st.error(f"El archivo debe tener la columna '{TARGET_QUANTITY_COLUMN}' para calcular bultos.")
         return
     data, source_label, _, quantity_used = load_enriched_data(folder, uploaded_file, quantity_col)
     st.sidebar.caption(f"Columna usada: {quantity_used}")
+    loading_placeholder.empty()
 
     if data.empty:
+        loading_placeholder.empty()
         st.warning("No hay filas Core/Value de CZA para clientes K+T o AS con el archivo seleccionado.")
         return
 
