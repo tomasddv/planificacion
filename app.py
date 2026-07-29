@@ -1030,10 +1030,6 @@ def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, Sou
 
 def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
     source = pd.read_excel(path, sheet_name=0, header=None)
-    file_month = objective_matrix_month(source)
-    current_month = pd.Timestamp.today(tz="America/Argentina/Buenos_Aires").month
-    if file_month is not None and file_month != current_month:
-        raise ValueError(f"El archivo de objetivos corresponde al mes {file_month}, no al mes actual {current_month}.")
     header_index = None
     for index, row in source.iterrows():
         values = row.fillna("").astype(str).tolist()
@@ -1091,6 +1087,58 @@ def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
     ]
 
     return pd.DataFrame(rows).dropna(subset=["OBJ VTAS"])
+
+
+def parse_report_supervisor_objectives_matrix(path: Path) -> pd.DataFrame:
+    source = pd.read_excel(path, sheet_name=0, header=None, dtype="object")
+    header_index = None
+    for index, row in source.iterrows():
+        values = row.fillna("").astype(str).tolist()
+        if any(clean_name(value) == "seleccion" for value in values) and any("-" in value for value in values):
+            header_index = index
+            break
+    if header_index is None:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+
+    header = source.loc[header_index]
+    vendor_columns: dict[int, str] = {}
+    for col, value in header.items():
+        text = str(value or "").strip()
+        clean = clean_name(text)
+        if not text or clean in {"subtotal_grupo", "diferencia", "total"}:
+            continue
+        if "-" in text:
+            vendor = normalize_vendor_name(text)
+            if vendor and vendor != "SIN VENDEDOR ASIGNADO":
+                vendor_columns[col] = vendor
+
+    code_sections = {
+        "2218": "MESA CERVEZA",
+        "16667": "MESA CERVEZA",
+        "19341": "MESA UNG",
+    }
+    rows: list[dict[str, object]] = []
+    for _, row in source.loc[header_index + 1 :].iterrows():
+        selection = str(row.iloc[0] if len(row) else "")
+        code = next((candidate for candidate in code_sections if candidate in selection), "")
+        if not code:
+            continue
+        section = code_sections[code]
+        for col, vendor in vendor_columns.items():
+            value = parse_objective_cell(row.get(col))
+            if not pd.isna(value):
+                rows.append(
+                    {
+                        "seccion": section,
+                        "item": mesa_from_promoter(pd.Series([vendor])).iloc[0],
+                        "OBJ VTAS": float(value),
+                    }
+                )
+    if not rows:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+    result = pd.DataFrame(rows)
+    result["item"] = result["item"].astype(str).str.strip().str.upper()
+    return result.groupby(["seccion", "item"], as_index=False)["OBJ VTAS"].sum()
 
 
 def objective_matrix_month(source: pd.DataFrame) -> int | None:
@@ -1328,6 +1376,52 @@ def load_planner_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFr
         modified=pd.to_datetime(modified_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
     )
     return result, info
+
+
+def objective_total_value(objectives_df: pd.DataFrame, *items: str) -> float:
+    if objectives_df is None or objectives_df.empty:
+        return np.nan
+    lookup = objectives_df.copy()
+    lookup["item_key"] = lookup["item"].astype(str).str.strip().str.upper()
+    for item in items:
+        value = lookup.loc[lookup["item_key"] == item.strip().upper(), "OBJ VTAS"].dropna()
+        if not value.empty:
+            return float(value.iloc[-1])
+    return np.nan
+
+
+def supervisor_objectives_from_planner(planner_objectives: pd.DataFrame, cza_total_target: float | None = None) -> pd.DataFrame:
+    if planner_objectives is None or planner_objectives.empty:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+
+    focus_sections = {
+        "Foco 1 - Total Cervezas 2026": "MESA CERVEZA",
+        "Foco 2 - Above core 2026": "MESA CERVEZA",
+        "Foco 3 - Total UNG 2026": "MESA UNG",
+    }
+    table = planner_objectives.copy()
+    table["foco_normalizado"] = table["foco"].map(normalize_planner_focus)
+    table = table[table["foco_normalizado"].isin(focus_sections)].copy()
+    if table.empty:
+        return pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+
+    table["promotor"] = table["promotor"].map(normalize_vendor_name)
+    table["supervisor"] = mesa_from_promoter(table["promotor"])
+    table["seccion"] = table["foco_normalizado"].map(focus_sections)
+    table["OBJ VTAS"] = pd.to_numeric(table["objetivo_mes"], errors="coerce")
+    table = table.dropna(subset=["OBJ VTAS"])
+    grouped = (
+        table.groupby(["seccion", "supervisor"], as_index=False)["OBJ VTAS"]
+        .sum()
+        .rename(columns={"supervisor": "item"})
+    )
+    grouped["item"] = grouped["item"].astype(str).str.strip().str.upper()
+    if cza_total_target is not None and not pd.isna(cza_total_target) and cza_total_target > 0:
+        cza_mask = grouped["seccion"].eq("MESA CERVEZA")
+        cza_total = grouped.loc[cza_mask, "OBJ VTAS"].sum()
+        if cza_total > 0:
+            grouped.loc[cza_mask, "OBJ VTAS"] = grouped.loc[cza_mask, "OBJ VTAS"] / cza_total * cza_total_target
+    return grouped[["seccion", "item", "OBJ VTAS"]]
 
 
 def normalize(raw: pd.DataFrame) -> pd.DataFrame:
@@ -2825,7 +2919,36 @@ def main() -> None:
         try:
             objectives_df, objectives_info = load_objectives(str(objectives_file), objectives_file.stat().st_mtime_ns)
         except Exception as exc:
-            st.sidebar.warning(f"No pude leer objetivos; uso objetivos de julio de respaldo: {exc}")
+            st.sidebar.warning(f"No pude leer objetivos; uso objetivos de respaldo: {exc}")
+
+    supervisor_objectives_info: SourceInfo | None = None
+    supervisor_objectives = pd.DataFrame(columns=["seccion", "item", "OBJ VTAS"])
+    if objectives_file is not None:
+        try:
+            supervisor_objectives = parse_report_supervisor_objectives_matrix(objectives_file)
+            if not supervisor_objectives.empty:
+                supervisor_objectives_info = objectives_info or SourceInfo(
+                    label=objectives_file.name,
+                    path=str(objectives_file),
+                    modified=pd.to_datetime(objectives_file.stat().st_mtime_ns, unit="ns").strftime("%d/%m/%Y %H:%M"),
+                )
+                objectives_df = pd.concat([objectives_df, supervisor_objectives], ignore_index=True)
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer objetivos por supervisor desde objetivos: {exc}")
+
+    planner_objectives_file = latest_planner_objectives_file_in_folder(data_dir)
+    if supervisor_objectives.empty and planner_objectives_file is not None:
+        try:
+            planner_objectives, supervisor_objectives_info = load_planner_objectives(
+                str(planner_objectives_file),
+                planner_objectives_file.stat().st_mtime_ns,
+            )
+            cza_total_target = objective_total_value(objectives_df, "TOTAL CVZA", "TOTAL CZA", "CZA")
+            supervisor_objectives = supervisor_objectives_from_planner(planner_objectives, cza_total_target)
+            if not supervisor_objectives.empty:
+                objectives_df = pd.concat([objectives_df, supervisor_objectives], ignore_index=True)
+        except Exception as exc:
+            st.sidebar.warning(f"No pude leer objetivos por supervisor: {exc}")
 
     annual_df: pd.DataFrame | None = None
     annual_info: SourceInfo | None = None
@@ -2858,6 +2981,8 @@ def main() -> None:
         st.sidebar.success(f"Objetivos: {objectives_info.label}")
     else:
         st.sidebar.info("Objetivos: respaldo julio cargado hasta que agregues sensibilizacion.xlsx")
+    if supervisor_objectives_info is not None:
+        st.sidebar.success(f"Objetivos supervisores: {supervisor_objectives_info.label}")
     if aux_info is not None:
         st.sidebar.success(f"Auxiliares: {aux_info.label}")
     if annual_info is not None:
