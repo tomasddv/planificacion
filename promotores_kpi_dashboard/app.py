@@ -867,6 +867,17 @@ def apply_alcohol_license_filter(df: pd.DataFrame, option: str):
     return df[df["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
 
 
+def apply_license_selection(df: pd.DataFrame, selection: str):
+    if df.empty or selection == "Todas" or "licencia_alcohol" not in df.columns:
+        return df
+    license_values = df["licencia_alcohol"].fillna("").str.upper()
+    if selection == "Con licencia":
+        return df[license_values.eq("SI")].copy()
+    if selection == "Sin licencia":
+        return df[~license_values.eq("SI")].copy()
+    return df
+
+
 def promoter_options_for(promotores_df: pd.DataFrame, supervisor: str):
     scoped = apply_supervisor_filter(promotores_df, supervisor)
     return ["Todos"] + sorted(scoped["promotor"].dropna().unique())
@@ -1035,7 +1046,7 @@ if view == "Acumulado mensual":
     month_end = pd.Timestamp(max(fechas))
     month_start = month_end.replace(day=1)
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
-    month_cols = st.columns([1.1, 1.3, 1.4, 1.6, 1.8])
+    month_cols = st.columns([1.1, 1.3, 1.4, 1.6, 1.25, 1.8])
     with month_cols[0]:
         month_route = st.selectbox("Grupo ruta", route_options, index=0, key="month_route")
     with month_cols[1]:
@@ -1046,11 +1057,14 @@ if view == "Acumulado mensual":
     with month_cols[3]:
         month_option = st.selectbox("KPI acumulado", options, index=0, key="month_kpi")
     with month_cols[4]:
+        month_license = st.selectbox("Licencia alcohol", ["Todas", "Con licencia", "Sin licencia"], index=0, key="month_license")
+    with month_cols[5]:
         st.caption(f"Mes acumulado {month_start.date()} a {month_end.date()} · TBD = SKUs vendidos por cliente.")
 
     month_focus, month_metric = parse_kpi_option(month_option)
     month_rutas_base = apply_supervisor_filter(rutas_grupo, month_supervisor)
     month_rutas_base = apply_promoter_filter(month_rutas_base, month_promoter)
+    month_rutas_base = apply_license_selection(month_rutas_base, month_license)
     month_promotores = apply_supervisor_filter(promotores, month_supervisor)
     month_promotores = apply_promoter_filter(month_promotores, month_promoter)
     month_filtered = filter_sales_by_focus_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
