@@ -648,15 +648,20 @@ def filter_business_sku_purchase_range(
     start_date,
     end_date,
     business: str,
-    sku: str,
+    skus,
     rutas_base: pd.DataFrame | None = None,
     route: str = "Todas",
 ):
     filtered = ventas_df[(ventas_df["fecha"].ge(pd.Timestamp(start_date))) & (ventas_df["fecha"].le(pd.Timestamp(end_date)))].copy()
     if business != "Todos":
         filtered = filtered[business_mask(filtered, business)]
-    if sku != "Todos":
-        filtered = filtered[filtered["producto"].fillna("").eq(sku)]
+    if isinstance(skus, str):
+        selected_skus = [skus]
+    else:
+        selected_skus = list(skus or [])
+    selected_skus = [sku for sku in selected_skus if sku and sku != "Todos"]
+    if selected_skus:
+        filtered = filtered[filtered["producto"].fillna("").isin(selected_skus)]
     if rutas_base is not None and rutas_base.empty:
         return filtered.iloc[0:0].copy()
     if rutas_base is not None and not rutas_base.empty:
@@ -1535,9 +1540,17 @@ if view == "No compradores SKU":
             (sku_sales_source["fecha"].ge(pd.Timestamp(sku_start))) & (sku_sales_source["fecha"].le(pd.Timestamp(sku_end)))
         ]
         sku_product_options = sku_options_for_business(period_sales_for_options, sku_business)
-        sku_product = st.selectbox("SKU", sku_product_options, index=0, key="sku_product")
+        sku_products_selected = st.multiselect("SKU", sku_product_options, default=["Todos"], key="sku_products")
+        if not sku_products_selected:
+            sku_products_selected = ["Todos"]
+        sku_products_filter = [sku for sku in sku_products_selected if sku != "Todos"]
+        if not sku_products_filter:
+            sku_products_filter = ["Todos"]
     with sku_cols[7]:
-        st.caption("Clientes de la ruta que no compraron el negocio/SKU en el período seleccionado.")
+        if sku_products_filter == ["Todos"]:
+            st.caption("Clientes de la ruta que no compraron el negocio/SKU en el período seleccionado.")
+        else:
+            st.caption(f"Clientes de la ruta que no compraron ninguno de los {len(sku_products_filter)} SKUs seleccionados.")
 
     sku_rutas_base = apply_supervisor_filter(rutas_grupo, sku_supervisor)
     sku_rutas_base = apply_promoter_filter(sku_rutas_base, sku_promoter)
@@ -1548,7 +1561,7 @@ if view == "No compradores SKU":
         sku_start,
         sku_end,
         sku_business,
-        sku_product,
+        sku_products_filter,
         sku_rutas_base,
         sku_route,
     )
