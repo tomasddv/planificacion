@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import shutil
 import time
@@ -232,6 +233,10 @@ def format_date(value: object) -> str:
     if value is None or pd.isna(value):
         return "-"
     return pd.Timestamp(value).strftime("%d/%m/%Y")
+
+
+def escape_html(value: object) -> str:
+    return html.escape("" if value is None or pd.isna(value) else str(value), quote=True)
 
 
 def status_class(status: object, days_block: object) -> str:
@@ -474,60 +479,58 @@ def render_lot_table(lots: pd.DataFrame) -> None:
         klass = status_class(row["estado"], row["dias_bloqueo"])
         card_class = "bad-card" if klass == "bad" else "warn-card" if klass == "warn" else ""
         status_text = row["estado"] or "-"
+        city = escape_html(row["ciudad"])
+        code = escape_html(row["codigo"])
+        description = escape_html(row["descripcion"])
+        status_display = escape_html(status_text)
+        file_name = escape_html(row["archivo"])
         rows.append(
             "<tr>"
-            f"<td>{row['ciudad']}</td>"
-            f"<td>{row['codigo']}</td>"
-            f"<td>{row['descripcion']}</td>"
+            f"<td>{city}</td>"
+            f"<td>{code}</td>"
+            f"<td>{description}</td>"
             f"<td>{int(row['lote_nro'])}</td>"
             f"<td>{format_num(row['stock_lote'])}</td>"
             f"<td>{format_date(row['fecha_vencimiento'])}</td>"
             f"<td class='{klass}'>{format_num(row['dias_bloqueo'])}</td>"
             f"<td>{format_num(row['dias_vta_bloqueo'])}</td>"
             f"<td>{format_num(row['dias_stock_lote'])}</td>"
-            f"<td class='{klass}'>{status_text}</td>"
-            f"<td>{row['archivo']}</td>"
+            f"<td class='{klass}'>{status_display}</td>"
+            f"<td>{file_name}</td>"
             "</tr>"
         )
         cards.append(
-            f"""
-            <div class="lot-card {card_class}">
-                <div class="lot-top">
-                    <div>
-                        <div class="lot-code">{row['ciudad']} - Cod {row['codigo']} - Lote {int(row['lote_nro'])}</div>
-                        <div class="lot-title">{row['descripcion']}</div>
-                    </div>
-                    <div class="lot-badge {klass}">{status_text}</div>
-                </div>
-                <div class="lot-meta">
-                    <div><span>Vence</span><strong>{format_date(row['fecha_vencimiento'])}</strong></div>
-                    <div><span>Stock lote</span><strong>{format_num(row['stock_lote'])}</strong></div>
-                    <div><span>Dias bloqueo</span><strong>{format_num(row['dias_bloqueo'])}</strong></div>
-                    <div><span>Dias stock</span><strong>{format_num(row['dias_stock_lote'])}</strong></div>
-                </div>
-            </div>
-            """
+            f"<div class='lot-card {card_class}'>"
+            "<div class='lot-top'>"
+            "<div>"
+            f"<div class='lot-code'>{city} - Cod {code} - Lote {int(row['lote_nro'])}</div>"
+            f"<div class='lot-title'>{description}</div>"
+            "</div>"
+            f"<div class='lot-badge {klass}'>{status_display}</div>"
+            "</div>"
+            "<div class='lot-meta'>"
+            f"<div><span>Vence</span><strong>{format_date(row['fecha_vencimiento'])}</strong></div>"
+            f"<div><span>Stock lote</span><strong>{format_num(row['stock_lote'])}</strong></div>"
+            f"<div><span>Dias bloqueo</span><strong>{format_num(row['dias_bloqueo'])}</strong></div>"
+            f"<div><span>Dias stock</span><strong>{format_num(row['dias_stock_lote'])}</strong></div>"
+            "</div>"
+            "</div>"
         )
-    st.markdown(
-        f"""
-        <div class="mobile-lots">
-            {''.join(cards)}
-        </div>
-        <div class="table-wrap desktop-table">
-            <table class="fresh-table">
-                <thead>
-                    <tr>
-                        <th>Ciudad</th><th>Codigo</th><th>Producto</th><th>Lote</th>
-                        <th>Stock lote</th><th>Fecha venc.</th><th>Dias p/bloqueo</th>
-                        <th>Dias vta p/bloqueo</th><th>Dias stock lote</th><th>Estado</th><th>Archivo</th>
-                    </tr>
-                </thead>
-                <tbody>{''.join(rows)}</tbody>
-            </table>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    html_body = (
+        "<div class='mobile-lots'>"
+        + "".join(cards)
+        + "</div>"
+        + "<div class='table-wrap desktop-table'>"
+        + "<table class='fresh-table'>"
+        + "<thead><tr>"
+        + "<th>Ciudad</th><th>Codigo</th><th>Producto</th><th>Lote</th>"
+        + "<th>Stock lote</th><th>Fecha venc.</th><th>Dias p/bloqueo</th>"
+        + "<th>Dias vta p/bloqueo</th><th>Dias stock lote</th><th>Estado</th><th>Archivo</th>"
+        + "</tr></thead>"
+        + f"<tbody>{''.join(rows)}</tbody>"
+        + "</table></div>"
     )
+    st.markdown(html_body, unsafe_allow_html=True)
 
 
 def export_excel(products: pd.DataFrame, lots: pd.DataFrame) -> bytes:
