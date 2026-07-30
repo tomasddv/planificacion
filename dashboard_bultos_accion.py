@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import shutil
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +20,9 @@ import app as sales_app
 APP_TITLE = "Control bultos Core / Value"
 TRUCK_ICON_PATH = Path(__file__).resolve().parent / "assets" / "distribuidora_del_valle_truck.png"
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
+DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
+DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
+EXTENSION_SHEET_NAME = "BD_EXTENSION_TOPES"
 TOPES_CANAL = {
     "K+T": 200.0,
     "AUTOSERVICIO": 500.0,
@@ -179,7 +185,7 @@ def inject_style() -> None:
         table.control-table {
             border-collapse: collapse;
             width: 100%;
-            min-width: 980px;
+            min-width: 1320px;
             font-size: .88rem;
         }
         .control-table th {
@@ -231,8 +237,24 @@ def format_pct(value: float | int | None) -> str:
     return f"{float(value):,.0f}%".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def parse_bool(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "si", "sí", "yes", "y", "activo", "activa"}
+
+
 def clean_name(value: object) -> str:
     return sales_app.clean_name("" if pd.isna(value) else str(value))
+
+
+def google_sheet_export_url(raw_url: str) -> str:
+    return sales_app.google_sheet_export_url(raw_url)
+
+
+def extensions_sheet_url() -> str:
+    return sales_app.secret_or_env("BULTOS_EXTENSION_SHEET_URL", sales_app.secret_or_env("PLANNER_GOOGLE_SHEET_URL", DEFAULT_SHEET_URL))
+
+
+def extensions_webapp_url() -> str:
+    return sales_app.secret_or_env("BULTOS_EXTENSION_WEBAPP_URL", sales_app.secret_or_env("PLANNER_WEBAPP_URL", DEFAULT_WEBAPP_URL))
 
 
 def core_brand_override(series: pd.Series) -> pd.Series:
@@ -573,6 +595,98 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
     return pivot.sort_values(["estado", "avance_CORE", "avance_VALUE"], ascending=[True, False, False])
 
 
+def empty_extensions() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "cliente_codigo",
+            "cliente",
+            "accion",
+            "primer_tope",
+            "segundo_tope",
+            "activa",
+            "comentario",
+            "actualizado",
+        ]
+    )
+
+
+def load_top_extensions(sheet_url: str) -> pd.DataFrame:
+    if not sheet_url:
+        return empty_extensions()
+    try:
+        workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, dtype="string")
+    except Exception:
+        return empty_extensions()
+    sheet = next((data for name, data in workbook.items() if clean_name(name) == clean_name(EXTENSION_SHEET_NAME)), None)
+    if sheet is None or sheet.empty:
+        return empty_extensions()
+    sheet = sheet.copy()
+    sheet.columns = sales_app.make_unique_columns(list(sheet.columns))
+    columns = {clean_name(column): column for column in sheet.columns}
+    code_col = columns.get("cliente_codigo") or columns.get("cod_cliente") or columns.get("codigo_cliente")
+    action_col = columns.get("accion")
+    if code_col is None or action_col is None:
+        return empty_extensions()
+    result = pd.DataFrame(
+        {
+            "cliente_codigo": pd.to_numeric(sheet[code_col], errors="coerce").astype("Int64").astype("string"),
+            "cliente": sheet[columns.get("cliente", code_col)].fillna("").astype(str).str.strip(),
+            "accion": sheet[action_col].fillna("").astype(str).str.strip().str.upper(),
+            "primer_tope": sales_app.parse_argentine_number(sheet[columns.get("primer_tope", code_col)])
+            if "primer_tope" in columns
+            else np.nan,
+            "segundo_tope": sales_app.parse_argentine_number(sheet[columns.get("segundo_tope", code_col)])
+            if "segundo_tope" in columns
+            else np.nan,
+            "activa": sheet[columns.get("activa", code_col)].map(parse_bool) if "activa" in columns else True,
+            "comentario": sheet[columns.get("comentario", code_col)].fillna("").astype(str).str.strip()
+            if "comentario" in columns
+            else "",
+            "actualizado": sheet[columns.get("actualizado", code_col)].fillna("").astype(str)
+            if "actualizado" in columns
+            else "",
+        }
+    )
+    result = result[result["cliente_codigo"].notna() & result["accion"].isin(["CORE", "VALUE"])].copy()
+    return result.drop_duplicates(["cliente_codigo", "accion"], keep="last")
+
+
+def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame) -> pd.DataFrame:
+    result = summary.copy()
+    for action in ["CORE", "VALUE"]:
+        result[f"extension_{action}"] = False
+        result[f"segundo_tope_{action}"] = np.nan
+        result[f"comentario_extension_{action}"] = ""
+        bultos_col = action
+        tope_col = f"tope_{action}"
+        result[f"primer_tope_comprado_{action}"] = np.minimum(result[bultos_col].fillna(0), result[tope_col].fillna(0))
+        result[f"segundo_tramo_comprado_{action}"] = np.maximum(result[bultos_col].fillna(0) - result[tope_col].fillna(0), 0)
+        result[f"restante_segundo_{action}"] = np.nan
+
+    if extensions.empty:
+        return result
+
+    result["cliente_codigo"] = pd.to_numeric(result["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    for action in ["CORE", "VALUE"]:
+        action_extensions = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
+        if action_extensions.empty:
+            continue
+        action_extensions = action_extensions[["cliente_codigo", "segundo_tope", "comentario"]].rename(
+            columns={
+                "segundo_tope": f"segundo_tope_{action}_ext",
+                "comentario": f"comentario_extension_{action}_ext",
+            }
+        )
+        result = result.merge(action_extensions, on="cliente_codigo", how="left")
+        has_extension = result[f"segundo_tope_{action}_ext"].notna()
+        result[f"extension_{action}"] = has_extension
+        result[f"segundo_tope_{action}"] = result[f"segundo_tope_{action}_ext"]
+        result[f"comentario_extension_{action}"] = result[f"comentario_extension_{action}_ext"].fillna("")
+        result[f"restante_segundo_{action}"] = result[f"segundo_tope_{action}"] - result[action].fillna(0)
+        result = result.drop(columns=[f"segundo_tope_{action}_ext", f"comentario_extension_{action}_ext"])
+    return result
+
+
 def near_top_or_over(restante: pd.Series, threshold: int) -> pd.Series:
     return restante.notna() & restante.le(float(threshold))
 
@@ -718,6 +832,11 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
     avance_col = f"avance_{action}"
     restante_col = f"restante_{action}"
     visible_col = f"mostrar_{action}"
+    extension_col = f"extension_{action}"
+    first_col = f"primer_tope_comprado_{action}"
+    second_bought_col = f"segundo_tramo_comprado_{action}"
+    second_top_col = f"segundo_tope_{action}"
+    second_left_col = f"restante_segundo_{action}"
     title = "CORE" if action == "CORE" else "VALUE"
     if visible_col in summary.columns:
         table = summary[summary[visible_col].fillna(False)].copy()
@@ -729,6 +848,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
     table = table.sort_values([avance_col, bultos_col], ascending=[False, False])
     rows = []
     for _, row in table.iterrows():
+        extension_text = "EXTENSION PEDIDA" if bool(row.get(extension_col, False)) else "-"
         rows.append(
             "<tr>"
             f"<td>{row['cliente_codigo']}</td>"
@@ -738,6 +858,11 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
             f"<td>{format_num(row[tope_col])}</td>"
             f"<td class='{status_class(row[avance_col])}'>{format_pct(row[avance_col])}</td>"
             f"<td>{format_num(row[restante_col])}</td>"
+            f"<td class='{'warn' if extension_text != '-' else ''}'>{extension_text}</td>"
+            f"<td>{format_num(row.get(first_col))}</td>"
+            f"<td>{format_num(row.get(second_bought_col))}</td>"
+            f"<td>{format_num(row.get(second_top_col))}</td>"
+            f"<td>{format_num(row.get(second_left_col))}</td>"
             f"<td>{row['supervisor']}</td>"
             f"<td>{row['vendedor']}</td>"
             f"<td>{row['ruta']}</td>"
@@ -751,6 +876,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
                     <tr>
                         <th>Cod cliente</th><th>Cliente</th><th>Canal</th>
                         <th>{title} bultos</th><th>Tope {title}</th><th>Avance {title}</th><th>Restan {title}</th>
+                        <th>Extension</th><th>Comprado 1er tope</th><th>Comprado 2do tramo</th><th>2do tope</th><th>Restan 2do</th>
                         <th>Supervisor</th><th>Vendedor</th><th>Ruta</th>
                     </tr>
                 </thead>
@@ -769,10 +895,18 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
     avance_col = f"avance_{action}"
     restante_col = f"restante_{action}"
     visible_col = f"mostrar_{action}"
+    extension_col = f"extension_{action}"
+    first_col = f"primer_tope_comprado_{action}"
+    second_bought_col = f"segundo_tramo_comprado_{action}"
+    second_top_col = f"segundo_tope_{action}"
+    second_left_col = f"restante_segundo_{action}"
     if visible_col in summary.columns:
         source = summary[summary[visible_col].fillna(False)].copy()
     else:
         source = summary[summary[bultos_col].fillna(0) > 0].copy()
+    for column in [extension_col, first_col, second_bought_col, second_top_col, second_left_col]:
+        if column not in source.columns:
+            source[column] = np.nan if column != extension_col else False
     return (
         source
         .sort_values([avance_col, bultos_col], ascending=[False, False])
@@ -784,6 +918,11 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
             tope_col,
             avance_col,
             restante_col,
+            extension_col,
+            first_col,
+            second_bought_col,
+            second_top_col,
+            second_left_col,
             "supervisor",
             "vendedor",
             "ruta",
@@ -797,6 +936,11 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
                 tope_col: f"Tope {action}",
                 avance_col: f"Avance {action} %",
                 restante_col: f"Restan {action}",
+                extension_col: "Extension pedida",
+                first_col: "Comprado 1er tope",
+                second_bought_col: "Comprado 2do tramo",
+                second_top_col: "2do tope",
+                second_left_col: "Restan 2do",
                 "supervisor": "Supervisor",
                 "vendedor": "Vendedor",
                 "ruta": "Ruta",
@@ -826,6 +970,109 @@ def export_summary_excel(core_export: pd.DataFrame, value_export: pd.DataFrame) 
     return buffer.getvalue()
 
 
+def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if summary.empty:
+        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "segundo_tope", "comentario"])
+    for action in ["CORE", "VALUE"]:
+        bultos_col = action
+        avance_col = f"avance_{action}"
+        tope_col = f"tope_{action}"
+        extension_col = f"extension_{action}"
+        second_top_col = f"segundo_tope_{action}"
+        comment_col = f"comentario_extension_{action}"
+        candidates = summary[(summary[avance_col].fillna(0) >= 100) | summary[extension_col].fillna(False)].copy()
+        for _, row in candidates.iterrows():
+            first_top = float(row.get(tope_col) or 0)
+            second_top = row.get(second_top_col)
+            if pd.isna(second_top):
+                second_top = first_top * 2 if first_top else np.nan
+            rows.append(
+                {
+                    "cliente_codigo": row["cliente_codigo"],
+                    "cliente": row["cliente"],
+                    "canal_accion": row["canal_accion"],
+                    "accion": action,
+                    "bultos": float(row.get(bultos_col) or 0),
+                    "primer_tope": first_top,
+                    "extension_pedida": bool(row.get(extension_col, False)),
+                    "segundo_tope": float(second_top) if not pd.isna(second_top) else np.nan,
+                    "comentario": str(row.get(comment_col) or ""),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "segundo_tope", "comentario"])
+    return pd.DataFrame(rows).sort_values(["accion", "bultos"], ascending=[True, False])
+
+
+def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object]:
+    payload_rows = []
+    for _, row in rows.iterrows():
+        primer_tope = pd.to_numeric(row.get("primer_tope"), errors="coerce")
+        segundo_tope = pd.to_numeric(row.get("segundo_tope"), errors="coerce")
+        payload_rows.append(
+            {
+                "cliente_codigo": str(row.get("cliente_codigo") or "").strip(),
+                "cliente": str(row.get("cliente") or "").strip(),
+                "canal": str(row.get("canal_accion") or "").strip(),
+                "accion": str(row.get("accion") or "").strip().upper(),
+                "primer_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
+                "segundo_tope": 0.0 if pd.isna(segundo_tope) else float(segundo_tope),
+                "activa": bool(row.get("extension_pedida", False)),
+                "comentario": str(row.get("comentario") or "").strip(),
+            }
+        )
+    payload = {"tipo": "extension_topes", "rows": payload_rows}
+    request = urllib.request.Request(
+        webapp_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"No pude conectar con Apps Script: {exc}") from exc
+    result = json.loads(body)
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", body))
+    return result
+
+
+def render_extension_manager(summary: pd.DataFrame, webapp_url: str) -> None:
+    editor = extension_editor_rows(summary)
+    with st.expander("Extensiones de tope pedidas", expanded=False):
+        if editor.empty:
+            st.info("No hay clientes al tope para pedir extension con los filtros actuales.")
+            return
+        edited = st.data_editor(
+            editor,
+            hide_index=True,
+            width="stretch",
+            disabled=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope"],
+            column_config={
+                "cliente_codigo": st.column_config.TextColumn("Cod cliente"),
+                "cliente": st.column_config.TextColumn("Cliente"),
+                "canal_accion": st.column_config.TextColumn("Canal"),
+                "accion": st.column_config.TextColumn("Accion"),
+                "bultos": st.column_config.NumberColumn("Bultos", format="%.1f"),
+                "primer_tope": st.column_config.NumberColumn("1er tope", format="%.1f"),
+                "extension_pedida": st.column_config.CheckboxColumn("Extension pedida"),
+                "segundo_tope": st.column_config.NumberColumn("2do tope", min_value=0.0, step=1.0, format="%.1f"),
+                "comentario": st.column_config.TextColumn("Comentario"),
+            },
+            key="extension_topes_editor",
+        )
+        if st.button("Guardar extensiones en Sheet", width="stretch"):
+            try:
+                result = save_top_extensions(webapp_url, edited)
+                st.cache_data.clear()
+                st.success(f"Extensiones guardadas. Filas escritas: {result.get('escritos', 0)}")
+            except Exception as exc:
+                st.error(f"No pude guardar extensiones: {exc}")
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon=page_icon(), layout="wide")
     inject_style()
@@ -846,8 +1093,11 @@ def main() -> None:
     if "bultos_drive_refresh" not in st.session_state:
         st.session_state["bultos_drive_refresh"] = 0.0
     drive_url = sales_app.secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
+    sheet_url = extensions_sheet_url()
+    webapp_url = extensions_webapp_url()
     if st.sidebar.button("Actualizar datos", width="stretch"):
         st.session_state["bultos_drive_refresh"] = time.time()
+        st.cache_data.clear()
 
     folder = prepare_drive_sources(
         drive_url,
@@ -857,6 +1107,7 @@ def main() -> None:
         st.sidebar.warning("No pude leer Google Drive. Use carga manual o revise el link/permiso.")
         folder = fallback_data_folder()
     st.sidebar.caption(f"Drive: {drive_url}")
+    st.sidebar.caption("Extensiones: Google Sheet")
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
 
     uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria bultos", type=["txt", "csv"])
@@ -889,8 +1140,11 @@ def main() -> None:
 
     filtered = apply_filters(data)
     summary = build_customer_summary(filtered)
+    extensions = load_top_extensions(sheet_url)
+    summary = merge_top_extensions(summary, extensions)
     summary_view = apply_summary_filters(summary)
     render_kpis(summary_view)
+    render_extension_manager(summary_view, webapp_url)
 
     st.subheader("Detalle CORE")
     render_action_table(summary_view, "CORE")
