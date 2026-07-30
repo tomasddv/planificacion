@@ -28,6 +28,18 @@ TOPES_CANAL = {
     "AUTOSERVICIO": 500.0,
     "AS": 500.0,
 }
+EXTENSION_ACTION_BY_CHANNEL = {
+    "K+T": {
+        "codigo": "23056",
+        "accion": "CORE Escala 3 KT EXCEPCION",
+        "descripcion": "EXCEPCION RGB/473--> KT SUR - Drop 3era escala",
+    },
+    "AS": {
+        "codigo": "23057",
+        "accion": "CORE Escala 3 AS EXCEPCION",
+        "descripcion": "EXCEPCION CORE RGB/473--> AS SUR- Drop 3era escala",
+    },
+}
 SEGMENTOS_ACCION = {
     "CVZA CORE": "CORE",
     "CVZA VALUE": "VALUE",
@@ -185,7 +197,7 @@ def inject_style() -> None:
         table.control-table {
             border-collapse: collapse;
             width: 100%;
-            min-width: 1320px;
+            min-width: 1540px;
             font-size: .88rem;
         }
         .control-table th {
@@ -235,6 +247,11 @@ def format_pct(value: float | int | None) -> str:
     if value is None or pd.isna(value):
         return "-"
     return f"{float(value):,.0f}%".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def extension_action_for_channel(channel: object, field: str) -> str:
+    key = str(channel or "").strip().upper().replace("AUTOSERVICIO", "AS")
+    return EXTENSION_ACTION_BY_CHANNEL.get(key, {}).get(field, "")
 
 
 def parse_bool(value: object) -> bool:
@@ -854,6 +871,8 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
             f"<td>{row['cliente_codigo']}</td>"
             f"<td>{row['cliente']}</td>"
             f"<td>{row['canal_accion']}</td>"
+            f"<td>{extension_action_for_channel(row['canal_accion'], 'codigo')}</td>"
+            f"<td>{extension_action_for_channel(row['canal_accion'], 'accion')}</td>"
             f"<td>{format_num(row[bultos_col])}</td>"
             f"<td>{format_num(row[tope_col])}</td>"
             f"<td class='{status_class(row[avance_col])}'>{format_pct(row[avance_col])}</td>"
@@ -875,6 +894,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
                 <thead>
                     <tr>
                         <th>Cod cliente</th><th>Cliente</th><th>Canal</th>
+                        <th>Cod accion ext.</th><th>Accion extension</th>
                         <th>{title} bultos</th><th>Tope {title}</th><th>Avance {title}</th><th>Restan {title}</th>
                         <th>Extension</th><th>Comprado 1er tope</th><th>Comprado 2do tramo</th><th>2do tope</th><th>Restan 2do</th>
                         <th>Supervisor</th><th>Vendedor</th><th>Ruta</th>
@@ -907,6 +927,9 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
     for column in [extension_col, first_col, second_bought_col, second_top_col, second_left_col]:
         if column not in source.columns:
             source[column] = np.nan if column != extension_col else False
+    source["codigo_accion_extension"] = source["canal_accion"].map(lambda value: extension_action_for_channel(value, "codigo"))
+    source["accion_extension"] = source["canal_accion"].map(lambda value: extension_action_for_channel(value, "accion"))
+    source["descripcion_accion_extension"] = source["canal_accion"].map(lambda value: extension_action_for_channel(value, "descripcion"))
     return (
         source
         .sort_values([avance_col, bultos_col], ascending=[False, False])
@@ -914,6 +937,9 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
             "cliente_codigo",
             "cliente",
             "canal_accion",
+            "codigo_accion_extension",
+            "accion_extension",
+            "descripcion_accion_extension",
             bultos_col,
             tope_col,
             avance_col,
@@ -932,6 +958,9 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
                 "cliente_codigo": "Cod cliente",
                 "cliente": "Cliente",
                 "canal_accion": "Canal",
+                "codigo_accion_extension": "Cod accion extension",
+                "accion_extension": "Accion extension",
+                "descripcion_accion_extension": "Descripcion accion extension",
                 bultos_col: f"{action} bultos",
                 tope_col: f"Tope {action}",
                 avance_col: f"Avance {action} %",
