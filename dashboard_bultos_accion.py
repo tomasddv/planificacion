@@ -573,6 +573,36 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
     return pivot.sort_values(["estado", "avance_CORE", "avance_VALUE"], ascending=[True, False, False])
 
 
+def near_top_or_over(restante: pd.Series, threshold: int) -> pd.Series:
+    return restante.notna() & restante.le(float(threshold))
+
+
+def positive_action(summary: pd.DataFrame, action: str) -> pd.Series:
+    return summary[action].fillna(0).gt(0)
+
+
+def mark_visible_for_threshold(result: pd.DataFrame, threshold: int, mode: str) -> pd.DataFrame:
+    core_near = near_top_or_over(result["restante_CORE"], threshold)
+    value_near = near_top_or_over(result["restante_VALUE"], threshold)
+    if mode == "Core":
+        result = result[core_near].copy()
+        result["mostrar_CORE"] = positive_action(result, "CORE")
+        result["mostrar_VALUE"] = False
+    elif mode == "Value":
+        result = result[value_near].copy()
+        result["mostrar_CORE"] = False
+        result["mostrar_VALUE"] = positive_action(result, "VALUE")
+    elif mode == "Core y Value":
+        result = result[core_near & value_near].copy()
+        result["mostrar_CORE"] = positive_action(result, "CORE")
+        result["mostrar_VALUE"] = positive_action(result, "VALUE")
+    else:
+        result = result[core_near | value_near].copy()
+        result["mostrar_CORE"] = positive_action(result, "CORE") & near_top_or_over(result["restante_CORE"], threshold)
+        result["mostrar_VALUE"] = positive_action(result, "VALUE") & near_top_or_over(result["restante_VALUE"], threshold)
+    return result
+
+
 def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
         return summary
@@ -596,23 +626,32 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
             "Llegaron a algun tope",
             "Llegaron a ambos topes",
             "No llegaron a ningun tope",
-            "Faltan hasta 50 Core",
-            "Faltan hasta 50 Value",
-            "Faltan hasta 50 en alguno",
-            "Faltan hasta 50 en ambos",
+            "Faltan <= 50 Core",
+            "Faltan <= 50 Value",
+            "Faltan <= 50 en alguno",
+            "Faltan <= 50 en ambos",
+            "Faltan <= 100 Core",
+            "Faltan <= 100 Value",
+            "Faltan <= 100 en alguno",
+            "Faltan <= 100 en ambos",
         ],
     )
     core_done = result["avance_CORE"] >= 100
     value_done = result["avance_VALUE"] >= 100
-    core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
-    value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
 
     st.sidebar.markdown("### Faltante cercano")
-    only_within_50 = st.sidebar.checkbox("Solo clientes que faltan 50 bultos o menos", value=False)
-    within_50_action = st.sidebar.selectbox(
+    only_near_top = st.sidebar.checkbox("Solo clientes cerca del tope o pasados", value=False)
+    near_threshold = st.sidebar.selectbox(
+        "Umbral faltante",
+        [50, 100],
+        index=0,
+        disabled=not only_near_top,
+        format_func=lambda value: f"{value} bultos",
+    )
+    near_action = st.sidebar.selectbox(
         "Aplicar faltante a",
         ["Core o Value", "Core", "Value", "Core y Value"],
-        disabled=not only_within_50,
+        disabled=not only_near_top,
     )
 
     if tope_filter == "Llegaron al tope Core":
@@ -625,42 +664,19 @@ def apply_summary_filters(summary: pd.DataFrame) -> pd.DataFrame:
         result = result[core_done & value_done]
     elif tope_filter == "No llegaron a ningun tope":
         result = result[~core_done & ~value_done]
-    elif tope_filter == "Faltan hasta 50 Core":
-        result = result[core_within_50]
-        result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
-        result["mostrar_VALUE"] = False
-    elif tope_filter == "Faltan hasta 50 Value":
-        result = result[value_within_50]
-        result["mostrar_CORE"] = False
-        result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
-    elif tope_filter == "Faltan hasta 50 en alguno":
-        result = result[core_within_50 | value_within_50]
-        result["mostrar_CORE"] = result["CORE"].fillna(0).gt(0) & result["restante_CORE"].between(0, 50, inclusive="both")
-        result["mostrar_VALUE"] = result["VALUE"].fillna(0).gt(0) & result["restante_VALUE"].between(0, 50, inclusive="both")
-    elif tope_filter == "Faltan hasta 50 en ambos":
-        result = result[core_within_50 & value_within_50]
-        result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
-        result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
-
-    if only_within_50:
-        core_within_50 = result["restante_CORE"].between(0, 50, inclusive="both")
-        value_within_50 = result["restante_VALUE"].between(0, 50, inclusive="both")
-        if within_50_action == "Core":
-            result = result[core_within_50]
-            result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
-            result["mostrar_VALUE"] = False
-        elif within_50_action == "Value":
-            result = result[value_within_50]
-            result["mostrar_CORE"] = False
-            result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
-        elif within_50_action == "Core y Value":
-            result = result[core_within_50 & value_within_50]
-            result["mostrar_CORE"] = result["CORE"].fillna(0) > 0
-            result["mostrar_VALUE"] = result["VALUE"].fillna(0) > 0
+    elif tope_filter.startswith("Faltan <= "):
+        threshold = 100 if "100" in tope_filter else 50
+        if "Core" in tope_filter:
+            result = mark_visible_for_threshold(result, threshold, "Core")
+        elif "Value" in tope_filter:
+            result = mark_visible_for_threshold(result, threshold, "Value")
+        elif "ambos" in tope_filter:
+            result = mark_visible_for_threshold(result, threshold, "Core y Value")
         else:
-            result = result[core_within_50 | value_within_50]
-            result["mostrar_CORE"] = result["CORE"].fillna(0).gt(0) & result["restante_CORE"].between(0, 50, inclusive="both")
-            result["mostrar_VALUE"] = result["VALUE"].fillna(0).gt(0) & result["restante_VALUE"].between(0, 50, inclusive="both")
+            result = mark_visible_for_threshold(result, threshold, "Core o Value")
+
+    if only_near_top:
+        result = mark_visible_for_threshold(result, int(near_threshold), near_action)
     return result
 
 
