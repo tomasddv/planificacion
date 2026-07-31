@@ -35,11 +35,12 @@ DEFAULT_DRIVE_FILE_IDS = {
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "reporte de clientes.xlsx": "1ZR9WOeqpaq9t-mJZM4f9AlUV7BIrKVo-",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
-    "VENTADIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+    "ventadiaria.txt": "12c7hy-bTbg7P_1QYUyKKcooNLo4iog1x",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
     "VENTA JUNIO 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
+    "VENTA JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
 DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
@@ -237,7 +238,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
             "RUTAS" in normalized
             or "AUXILIARES" in normalized
             or ("REPORTE" in normalized and "CLIENTES" in normalized)
-            or ("VENTA" in normalized and "DIARIA" in compact and "ANUAL" not in normalized)
+            or ("VENTA" in normalized and "DIARIA" in compact and "ANUAL" not in normalized and "BULTOS" not in normalized)
             or "PLANTILLACLIENTESAR" in compact
         )
 
@@ -254,9 +255,9 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
                     future.result()
             try:
                 drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
-                selected_reports = [
+                selected_files = [
                     file for file in (drive_files or [])
-                    if "REPORTE" in str(file.path).upper() and "CLIENTES" in str(file.path).upper()
+                    if wanted_drive_file(str(file.path))
                 ]
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     futures = [
@@ -267,7 +268,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
                             quiet=True,
                             use_cookies=False,
                         )
-                        for file in selected_reports
+                        for file in selected_files
                     ]
                     for future in as_completed(futures):
                         future.result()

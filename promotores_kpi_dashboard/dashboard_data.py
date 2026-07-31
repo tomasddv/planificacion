@@ -475,7 +475,7 @@ def load_dataset(base_dir: str):
     base = Path(base_dir)
     rutas_path = find_data_file(base, ("RUTAS",), (".xlsx", ".xls"))
     aux_path = find_data_file(base, ("AUXILIARES",), (".xlsx", ".xls"))
-    ventas_path = find_data_file(base, ("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL",))
+    ventas_path = find_data_file(base, ("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL", "BULTOS"))
     ventas_anual_path = find_data_file(base, ("VENTA", "ANUAL"), (".txt", ".csv"))
     reporte_clientes_path = find_data_file(base, ("REPORTE", "CLIENTES"), (".xlsx", ".xls", ".csv", ".txt"))
     clientes_path = find_clientes_path(base)
