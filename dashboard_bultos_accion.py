@@ -197,7 +197,7 @@ def inject_style() -> None:
         table.control-table {
             border-collapse: collapse;
             width: 100%;
-            min-width: 1540px;
+            min-width: 1640px;
             font-size: .88rem;
         }
         .control-table th {
@@ -256,6 +256,25 @@ def extension_action_for_channel(channel: object, field: str) -> str:
 
 def parse_bool(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "si", "sí", "yes", "y", "activo", "activa"}
+
+
+def today_date() -> pd.Timestamp:
+    return pd.Timestamp.today(tz="America/Argentina/Buenos_Aires").normalize().tz_localize(None)
+
+
+def parse_date_series(values: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(values, errors="coerce", dayfirst=True)
+    fallback = pd.to_datetime(values, errors="coerce")
+    return parsed.fillna(fallback).dt.normalize()
+
+
+def date_text(value: object) -> str:
+    parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return pd.Timestamp(parsed).strftime("%Y-%m-%d")
 
 
 def clean_name(value: object) -> str:
@@ -618,6 +637,7 @@ def empty_extensions() -> pd.DataFrame:
             "cliente_codigo",
             "cliente",
             "accion",
+            "fecha_extension",
             "primer_tope",
             "segundo_tope",
             "activa",
@@ -649,6 +669,9 @@ def load_top_extensions(sheet_url: str) -> pd.DataFrame:
             "cliente_codigo": pd.to_numeric(sheet[code_col], errors="coerce").astype("Int64").astype("string"),
             "cliente": sheet[columns.get("cliente", code_col)].fillna("").astype(str).str.strip(),
             "accion": sheet[action_col].fillna("").astype(str).str.strip().str.upper(),
+            "fecha_extension": parse_date_series(sheet[columns.get("fecha_extension", columns.get("actualizado", code_col))])
+            if "fecha_extension" in columns or "actualizado" in columns
+            else pd.NaT,
             "primer_tope": sales_app.parse_argentine_number(sheet[columns.get("primer_tope", code_col)])
             if "primer_tope" in columns
             else np.nan,
@@ -665,19 +688,39 @@ def load_top_extensions(sheet_url: str) -> pd.DataFrame:
         }
     )
     result = result[result["cliente_codigo"].notna() & result["accion"].isin(["CORE", "VALUE"])].copy()
+    result["fecha_extension"] = result["fecha_extension"].fillna(today_date())
     return result.drop_duplicates(["cliente_codigo", "accion"], keep="last")
 
 
-def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame) -> pd.DataFrame:
+def extension_purchase_since(data: pd.DataFrame, extensions: pd.DataFrame, action: str) -> pd.DataFrame:
+    if data.empty or extensions.empty:
+        return pd.DataFrame(columns=["cliente_codigo", f"segundo_tramo_comprado_{action}"])
+    active = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
+    if active.empty:
+        return pd.DataFrame(columns=["cliente_codigo", f"segundo_tramo_comprado_{action}"])
+    active["cliente_codigo"] = pd.to_numeric(active["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    work = data[data["accion"].eq(action)].copy()
+    work["cliente_codigo"] = pd.to_numeric(work["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    work = work.merge(active[["cliente_codigo", "fecha_extension"]], on="cliente_codigo", how="inner")
+    work = work[pd.to_datetime(work["fecha"], errors="coerce").dt.normalize() >= work["fecha_extension"]]
+    if work.empty:
+        return pd.DataFrame(columns=["cliente_codigo", f"segundo_tramo_comprado_{action}"])
+    return work.groupby("cliente_codigo", as_index=False)["bultos"].sum().rename(
+        columns={"bultos": f"segundo_tramo_comprado_{action}"}
+    )
+
+
+def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame, data: pd.DataFrame | None = None) -> pd.DataFrame:
     result = summary.copy()
     for action in ["CORE", "VALUE"]:
         result[f"extension_{action}"] = False
+        result[f"fecha_extension_{action}"] = pd.NaT
         result[f"segundo_tope_{action}"] = np.nan
         result[f"comentario_extension_{action}"] = ""
         bultos_col = action
         tope_col = f"tope_{action}"
         result[f"primer_tope_comprado_{action}"] = np.minimum(result[bultos_col].fillna(0), result[tope_col].fillna(0))
-        result[f"segundo_tramo_comprado_{action}"] = np.maximum(result[bultos_col].fillna(0) - result[tope_col].fillna(0), 0)
+        result[f"segundo_tramo_comprado_{action}"] = 0.0
         result[f"restante_segundo_{action}"] = np.nan
 
     if extensions.empty:
@@ -688,8 +731,9 @@ def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame) -> pd.
         action_extensions = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
         if action_extensions.empty:
             continue
-        action_extensions = action_extensions[["cliente_codigo", "segundo_tope", "comentario"]].rename(
+        action_extensions = action_extensions[["cliente_codigo", "fecha_extension", "segundo_tope", "comentario"]].rename(
             columns={
+                "fecha_extension": f"fecha_extension_{action}_ext",
                 "segundo_tope": f"segundo_tope_{action}_ext",
                 "comentario": f"comentario_extension_{action}_ext",
             }
@@ -697,10 +741,31 @@ def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame) -> pd.
         result = result.merge(action_extensions, on="cliente_codigo", how="left")
         has_extension = result[f"segundo_tope_{action}_ext"].notna()
         result[f"extension_{action}"] = has_extension
+        result[f"fecha_extension_{action}"] = result[f"fecha_extension_{action}_ext"]
         result[f"segundo_tope_{action}"] = result[f"segundo_tope_{action}_ext"]
         result[f"comentario_extension_{action}"] = result[f"comentario_extension_{action}_ext"].fillna("")
-        result[f"restante_segundo_{action}"] = result[f"segundo_tope_{action}"] - result[action].fillna(0)
-        result = result.drop(columns=[f"segundo_tope_{action}_ext", f"comentario_extension_{action}_ext"])
+        if data is not None:
+            since = extension_purchase_since(data, extensions, action)
+            if not since.empty:
+                result = result.merge(since, on="cliente_codigo", how="left", suffixes=("", "_since"))
+                result[f"segundo_tramo_comprado_{action}"] = result[f"segundo_tramo_comprado_{action}_since"].fillna(0.0)
+                result = result.drop(columns=[f"segundo_tramo_comprado_{action}_since"])
+        else:
+            result[f"segundo_tramo_comprado_{action}"] = np.where(
+                has_extension,
+                np.maximum(result[action].fillna(0) - result[f"primer_tope_comprado_{action}"].fillna(0), 0),
+                result[f"segundo_tramo_comprado_{action}"],
+            )
+        result[f"primer_tope_comprado_{action}"] = np.where(
+            has_extension,
+            np.minimum(
+                np.maximum(result[action].fillna(0) - result[f"segundo_tramo_comprado_{action}"].fillna(0), 0),
+                result[f"tope_{action}"].fillna(0),
+            ),
+            result[f"primer_tope_comprado_{action}"],
+        )
+        result[f"restante_segundo_{action}"] = result[f"segundo_tope_{action}"] - result[f"segundo_tramo_comprado_{action}"].fillna(0)
+        result = result.drop(columns=[f"fecha_extension_{action}_ext", f"segundo_tope_{action}_ext", f"comentario_extension_{action}_ext"])
     return result
 
 
@@ -854,6 +919,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
     second_bought_col = f"segundo_tramo_comprado_{action}"
     second_top_col = f"segundo_tope_{action}"
     second_left_col = f"restante_segundo_{action}"
+    extension_date_col = f"fecha_extension_{action}"
     title = "CORE" if action == "CORE" else "VALUE"
     if visible_col in summary.columns:
         table = summary[summary[visible_col].fillna(False)].copy()
@@ -878,6 +944,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
             f"<td class='{status_class(row[avance_col])}'>{format_pct(row[avance_col])}</td>"
             f"<td>{format_num(row[restante_col])}</td>"
             f"<td class='{'warn' if extension_text != '-' else ''}'>{extension_text}</td>"
+            f"<td>{date_text(row.get(extension_date_col)) or '-'}</td>"
             f"<td>{format_num(row.get(first_col))}</td>"
             f"<td>{format_num(row.get(second_bought_col))}</td>"
             f"<td>{format_num(row.get(second_top_col))}</td>"
@@ -896,7 +963,7 @@ def render_action_table(summary: pd.DataFrame, action: str) -> None:
                         <th>Cod cliente</th><th>Cliente</th><th>Canal</th>
                         <th>Cod accion ext.</th><th>Accion extension</th>
                         <th>{title} bultos</th><th>Tope {title}</th><th>Avance {title}</th><th>Restan {title}</th>
-                        <th>Extension</th><th>Comprado 1er tope</th><th>Comprado 2do tramo</th><th>2do tope</th><th>Restan 2do</th>
+                        <th>Extension</th><th>Fecha extension</th><th>Comprado 1er tope</th><th>Comprado 2do tramo</th><th>Tope 2do tramo</th><th>Restan 2do</th>
                         <th>Supervisor</th><th>Vendedor</th><th>Ruta</th>
                     </tr>
                 </thead>
@@ -920,11 +987,12 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
     second_bought_col = f"segundo_tramo_comprado_{action}"
     second_top_col = f"segundo_tope_{action}"
     second_left_col = f"restante_segundo_{action}"
+    extension_date_col = f"fecha_extension_{action}"
     if visible_col in summary.columns:
         source = summary[summary[visible_col].fillna(False)].copy()
     else:
         source = summary[summary[bultos_col].fillna(0) > 0].copy()
-    for column in [extension_col, first_col, second_bought_col, second_top_col, second_left_col]:
+    for column in [extension_col, extension_date_col, first_col, second_bought_col, second_top_col, second_left_col]:
         if column not in source.columns:
             source[column] = np.nan if column != extension_col else False
     source["codigo_accion_extension"] = source["canal_accion"].map(lambda value: extension_action_for_channel(value, "codigo"))
@@ -945,6 +1013,7 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
             avance_col,
             restante_col,
             extension_col,
+            extension_date_col,
             first_col,
             second_bought_col,
             second_top_col,
@@ -966,9 +1035,10 @@ def export_action_table(summary: pd.DataFrame, action: str) -> pd.DataFrame:
                 avance_col: f"Avance {action} %",
                 restante_col: f"Restan {action}",
                 extension_col: "Extension pedida",
+                extension_date_col: "Fecha extension",
                 first_col: "Comprado 1er tope",
                 second_bought_col: "Comprado 2do tramo",
-                second_top_col: "2do tope",
+                second_top_col: "Tope 2do tramo",
                 second_left_col: "Restan 2do",
                 "supervisor": "Supervisor",
                 "vendedor": "Vendedor",
@@ -1002,20 +1072,24 @@ def export_summary_excel(core_export: pd.DataFrame, value_export: pd.DataFrame) 
 def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
     rows = []
     if summary.empty:
-        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "segundo_tope", "comentario"])
+        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "fecha_extension", "segundo_tope", "comentario"])
     for action in ["CORE", "VALUE"]:
         bultos_col = action
         avance_col = f"avance_{action}"
         tope_col = f"tope_{action}"
         extension_col = f"extension_{action}"
         second_top_col = f"segundo_tope_{action}"
+        extension_date_col = f"fecha_extension_{action}"
         comment_col = f"comentario_extension_{action}"
         candidates = summary[(summary[avance_col].fillna(0) >= 100) | summary[extension_col].fillna(False)].copy()
         for _, row in candidates.iterrows():
             first_top = float(row.get(tope_col) or 0)
             second_top = row.get(second_top_col)
             if pd.isna(second_top):
-                second_top = first_top * 2 if first_top else np.nan
+                second_top = first_top if first_top else np.nan
+            extension_date = pd.to_datetime(row.get(extension_date_col), errors="coerce")
+            if pd.isna(extension_date):
+                extension_date = today_date()
             rows.append(
                 {
                     "cliente_codigo": row["cliente_codigo"],
@@ -1025,12 +1099,13 @@ def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
                     "bultos": float(row.get(bultos_col) or 0),
                     "primer_tope": first_top,
                     "extension_pedida": bool(row.get(extension_col, False)),
+                    "fecha_extension": pd.Timestamp(extension_date).date(),
                     "segundo_tope": float(second_top) if not pd.isna(second_top) else np.nan,
                     "comentario": str(row.get(comment_col) or ""),
                 }
             )
     if not rows:
-        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "segundo_tope", "comentario"])
+        return pd.DataFrame(columns=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "extension_pedida", "fecha_extension", "segundo_tope", "comentario"])
     return pd.DataFrame(rows).sort_values(["accion", "bultos"], ascending=[True, False])
 
 
@@ -1039,12 +1114,14 @@ def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object
     for _, row in rows.iterrows():
         primer_tope = pd.to_numeric(row.get("primer_tope"), errors="coerce")
         segundo_tope = pd.to_numeric(row.get("segundo_tope"), errors="coerce")
+        fecha_extension = date_text(row.get("fecha_extension")) or today_date().strftime("%Y-%m-%d")
         payload_rows.append(
             {
                 "cliente_codigo": str(row.get("cliente_codigo") or "").strip(),
                 "cliente": str(row.get("cliente") or "").strip(),
                 "canal": str(row.get("canal_accion") or "").strip(),
                 "accion": str(row.get("accion") or "").strip().upper(),
+                "fecha_extension": fecha_extension,
                 "primer_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
                 "segundo_tope": 0.0 if pd.isna(segundo_tope) else float(segundo_tope),
                 "activa": bool(row.get("extension_pedida", False)),
@@ -1088,7 +1165,8 @@ def render_extension_manager(summary: pd.DataFrame, webapp_url: str) -> None:
                 "bultos": st.column_config.NumberColumn("Bultos", format="%.1f"),
                 "primer_tope": st.column_config.NumberColumn("1er tope", format="%.1f"),
                 "extension_pedida": st.column_config.CheckboxColumn("Extension pedida"),
-                "segundo_tope": st.column_config.NumberColumn("2do tope", min_value=0.0, step=1.0, format="%.1f"),
+                "fecha_extension": st.column_config.DateColumn("Fecha extension", format="DD/MM/YYYY"),
+                "segundo_tope": st.column_config.NumberColumn("Tope 2do tramo", min_value=0.0, step=1.0, format="%.1f"),
                 "comentario": st.column_config.TextColumn("Comentario"),
             },
             key="extension_topes_editor",
@@ -1170,7 +1248,7 @@ def main() -> None:
     filtered = apply_filters(data)
     summary = build_customer_summary(filtered)
     extensions = load_top_extensions(sheet_url)
-    summary = merge_top_extensions(summary, extensions)
+    summary = merge_top_extensions(summary, extensions, filtered)
     summary_view = apply_summary_filters(summary)
     render_kpis(summary_view)
     render_extension_manager(summary_view, webapp_url)
