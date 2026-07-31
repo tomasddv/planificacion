@@ -35,7 +35,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "reporte de clientes.xlsx": "1ZR9WOeqpaq9t-mJZM4f9AlUV7BIrKVo-",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
-    "VENTA DIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+    "VENTADIARIA.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
@@ -193,6 +193,22 @@ def is_drive_url(value: str):
     return value.startswith("http://") or value.startswith("https://")
 
 
+def normalized_drive_name(name: str):
+    normalized = str(name or "").upper().replace("_", " ").replace("-", " ")
+    return " ".join(normalized.split())
+
+
+def is_closed_month_sales_file(name: str):
+    normalized = normalized_drive_name(Path(str(name)).name)
+    compact = normalized.replace(" ", "")
+    return (
+        ("VENTA" in normalized or "FACTURACION" in normalized or "FACTURACIÓN" in normalized)
+        and "ANUAL" not in normalized
+        and "DIARIA" not in compact
+        and normalized.endswith((".TXT", ".CSV"))
+    )
+
+
 def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: bool = False):
     drive_url = drive_url or secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
     if not drive_url:
@@ -215,7 +231,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
     tmp.mkdir(parents=True, exist_ok=True)
 
     def wanted_drive_file(name: str):
-        normalized = name.upper().replace("_", " ").replace("-", " ")
+        normalized = normalized_drive_name(name)
         compact = normalized.replace(" ", "")
         return (
             "RUTAS" in normalized
@@ -341,6 +357,50 @@ def resolve_closed_month_sales_files(force_refresh: bool = False):
             if tmp.exists():
                 tmp.unlink()
             statuses.append(f"{local_name}: error {exc}")
+
+    try:
+        drive_url = secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
+        drive_files = gdown.download_folder(url=drive_url, output=str(target_dir), quiet=True, use_cookies=False, skip_download=True)
+        monthly_files = [file for file in (drive_files or []) if is_closed_month_sales_file(str(file.path))]
+        existing_names = {path.name.upper() for path in paths}
+
+        def download_monthly_file(file):
+            local_name = Path(str(file.path)).name
+            target = target_dir / local_name
+            if target.name.upper() in existing_names and target.exists() and target.stat().st_size > 0 and not force_refresh:
+                return target, f"{local_name}: cache"
+            if target.exists() and target.stat().st_size > 0 and not force_refresh:
+                return target, f"{local_name}: cache"
+            tmp = target.with_suffix(".tmp")
+            if tmp.exists():
+                tmp.unlink()
+            gdown.download(id=file.id, output=str(tmp), quiet=True, use_cookies=False)
+            tmp.replace(target)
+            return target, f"{local_name}: actualizado"
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(download_monthly_file, file) for file in monthly_files]
+            for future in as_completed(futures):
+                try:
+                    target, status = future.result()
+                    if target.exists() and target.stat().st_size > 0 and target.name.upper() not in existing_names:
+                        paths.append(target)
+                        existing_names.add(target.name.upper())
+                    statuses.append(status)
+                except Exception as exc:
+                    statuses.append(f"mensual: error {exc}")
+    except Exception as exc:
+        statuses.append(f"mensuales Drive: error {exc}")
+
+    local_monthlies = sorted(
+        [path for path in target_dir.iterdir() if path.is_file() and is_closed_month_sales_file(path.name) and path.stat().st_size > 0],
+        key=lambda path: path.name.upper(),
+    )
+    existing_names = {path.name.upper() for path in paths}
+    for path in local_monthlies:
+        if path.name.upper() not in existing_names:
+            paths.append(path)
+            statuses.append(f"{path.name}: cache local")
 
     return paths, "; ".join(statuses)
 
@@ -935,7 +995,7 @@ def period_controls(prefix: str, fechas_venta: list, aux_path: str):
         period_value = st.selectbox("Período", fechas_venta, index=len(fechas_venta) - 1, key=f"{prefix}_period_date")
     else:
         with st.spinner("Preparando ventas historicas..."):
-            historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=False)
+            historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=force_drive_refresh)
         if not historical_sources:
             st.error(annual_status)
             st.stop()
@@ -1012,6 +1072,10 @@ with st.sidebar:
         with st.spinner("Leyendo archivos desde Drive..."):
             drive_dir, drive_status = resolve_google_drive_folder(source_input, force_refresh=force_drive_refresh)
         data_dir = str(drive_dir) if drive_dir else DEFAULT_DATA_DIR
+        if force_drive_refresh:
+            with st.spinner("Actualizando cierres mensuales desde Drive..."):
+                _closed_paths, closed_status = resolve_closed_month_sales_files(force_refresh=True)
+            drive_status = f"{drive_status}; {closed_status}"
     else:
         drive_status = "Carpeta local"
         data_dir = source_input or DEFAULT_DATA_DIR
@@ -1350,7 +1414,7 @@ if view == "No compradores":
             nb_period = st.selectbox("Período", fechas, index=len(fechas) - 1, key="nb_period_date")
         else:
             with st.spinner("Preparando ventas historicas..."):
-                historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=False)
+                historical_sources, annual_status = resolve_closed_month_sales_files(force_refresh=force_drive_refresh)
             if not historical_sources:
                 st.error(annual_status)
                 st.stop()
@@ -1481,7 +1545,7 @@ if view == "No compradores SKU":
             sku_period = st.selectbox("Período", fechas, index=len(fechas) - 1, key="sku_period_date")
         else:
             with st.spinner("Preparando ventas historicas..."):
-                sku_historical_sources, sku_annual_status = resolve_closed_month_sales_files(force_refresh=False)
+                sku_historical_sources, sku_annual_status = resolve_closed_month_sales_files(force_refresh=force_drive_refresh)
             if not sku_historical_sources:
                 st.error(sku_annual_status)
                 st.stop()
