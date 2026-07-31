@@ -731,18 +731,17 @@ def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame, data: 
         action_extensions = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
         if action_extensions.empty:
             continue
-        action_extensions = action_extensions[["cliente_codigo", "fecha_extension", "segundo_tope", "comentario"]].rename(
+        action_extensions = action_extensions[["cliente_codigo", "fecha_extension", "comentario"]].rename(
             columns={
                 "fecha_extension": f"fecha_extension_{action}_ext",
-                "segundo_tope": f"segundo_tope_{action}_ext",
                 "comentario": f"comentario_extension_{action}_ext",
             }
         )
         result = result.merge(action_extensions, on="cliente_codigo", how="left")
-        has_extension = result[f"segundo_tope_{action}_ext"].notna()
+        has_extension = result[f"fecha_extension_{action}_ext"].notna()
         result[f"extension_{action}"] = has_extension
         result[f"fecha_extension_{action}"] = result[f"fecha_extension_{action}_ext"]
-        result[f"segundo_tope_{action}"] = result[f"segundo_tope_{action}_ext"]
+        result[f"segundo_tope_{action}"] = np.where(has_extension, result[f"tope_{action}"], np.nan)
         result[f"comentario_extension_{action}"] = result[f"comentario_extension_{action}_ext"].fillna("")
         if data is not None:
             since = extension_purchase_since(data, extensions, action)
@@ -765,7 +764,7 @@ def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame, data: 
             result[f"primer_tope_comprado_{action}"],
         )
         result[f"restante_segundo_{action}"] = result[f"segundo_tope_{action}"] - result[f"segundo_tramo_comprado_{action}"].fillna(0)
-        result = result.drop(columns=[f"fecha_extension_{action}_ext", f"segundo_tope_{action}_ext", f"comentario_extension_{action}_ext"])
+        result = result.drop(columns=[f"fecha_extension_{action}_ext", f"comentario_extension_{action}_ext"])
     return result
 
 
@@ -1087,6 +1086,8 @@ def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
             second_top = row.get(second_top_col)
             if pd.isna(second_top):
                 second_top = first_top if first_top else np.nan
+            else:
+                second_top = first_top if first_top else second_top
             extension_date = pd.to_datetime(row.get(extension_date_col), errors="coerce")
             if pd.isna(extension_date):
                 extension_date = today_date()
@@ -1113,7 +1114,6 @@ def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object
     payload_rows = []
     for _, row in rows.iterrows():
         primer_tope = pd.to_numeric(row.get("primer_tope"), errors="coerce")
-        segundo_tope = pd.to_numeric(row.get("segundo_tope"), errors="coerce")
         fecha_extension = date_text(row.get("fecha_extension")) or today_date().strftime("%Y-%m-%d")
         payload_rows.append(
             {
@@ -1123,7 +1123,7 @@ def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object
                 "accion": str(row.get("accion") or "").strip().upper(),
                 "fecha_extension": fecha_extension,
                 "primer_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
-                "segundo_tope": 0.0 if pd.isna(segundo_tope) else float(segundo_tope),
+                "segundo_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
                 "activa": bool(row.get("extension_pedida", False)),
                 "comentario": str(row.get("comentario") or "").strip(),
             }
@@ -1156,7 +1156,7 @@ def render_extension_manager(summary: pd.DataFrame, webapp_url: str) -> None:
             editor,
             hide_index=True,
             width="stretch",
-            disabled=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope"],
+            disabled=["cliente_codigo", "cliente", "canal_accion", "accion", "bultos", "primer_tope", "segundo_tope"],
             column_config={
                 "cliente_codigo": st.column_config.TextColumn("Cod cliente"),
                 "cliente": st.column_config.TextColumn("Cliente"),
