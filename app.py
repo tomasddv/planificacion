@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - app keeps working without holiday pack
 
 APP_TITLE = "Venta diaria HL"
 SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
+SALES_CURVE_CUTOFF = pd.Timestamp("2026-07-31")
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR_CANDIDATES = [
     PROJECT_ROOT / "planificacion",
@@ -604,9 +605,6 @@ def latest_objectives_file_in_folder(folder: Path) -> Path | None:
     ]
     if not files:
         return None
-    sensibilizacion = [path for path in files if "sensibilizacion" in clean_name(path.stem)]
-    if sensibilizacion:
-        return max(sensibilizacion, key=lambda path: path.stat().st_mtime)
     return max(files, key=lambda path: path.stat().st_mtime)
 
 
@@ -2191,6 +2189,32 @@ def year_comparison_curve(
     return pd.concat([current, previous], ignore_index=True)
 
 
+def year_comparison_curve_range(
+    current_daily: pd.DataFrame,
+    annual_daily: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DataFrame:
+    start_date = pd.Timestamp(start_date).normalize()
+    end_date = pd.Timestamp(end_date).normalize()
+    previous_start = start_date - pd.DateOffset(years=1)
+    previous_end = end_date - pd.DateOffset(years=1)
+
+    current = current_daily[
+        (current_daily["fecha"] >= start_date) & (current_daily["fecha"] <= end_date)
+    ].copy()
+    current["serie"] = "Venta diaria actual"
+    current["fecha_comparativa"] = current["fecha"]
+
+    previous = annual_daily[
+        (annual_daily["fecha"] >= previous_start) & (annual_daily["fecha"] <= previous_end)
+    ].copy()
+    previous["serie"] = "Venta diaria AA"
+    previous["fecha_comparativa"] = previous["fecha"] + pd.DateOffset(years=1)
+
+    return pd.concat([current, previous], ignore_index=True)
+
+
 def aa_daily_report(current_df: pd.DataFrame, annual_df: pd.DataFrame) -> pd.DataFrame:
     dims = ["fecha", "division", "unidad_negocio", "calibre", "mesa", "canal", "supervisor", "promotor"]
     current = current_df.groupby(dims, as_index=False)["hl"].sum().rename(columns={"hl": "HL actual"})
@@ -2244,6 +2268,40 @@ def daily_sales_curve_by_business(df: pd.DataFrame) -> pd.DataFrame:
     holiday_dates = argentina_holidays_for_years(sorted(set(curve["fecha"].dt.year.tolist())))
     non_selling_zero = curve["fecha"].map(lambda date: selling_day_weight(date, holiday_dates) == 0) & curve["hl"].eq(0)
     return curve[~non_selling_zero].copy()
+
+
+def curve_cutoff_date(selected_date: pd.Timestamp) -> pd.Timestamp:
+    return min(pd.Timestamp(selected_date).normalize(), SALES_CURVE_CUTOFF)
+
+
+def default_curve_period(df: pd.DataFrame, selected_date: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    if df.empty or "fecha" not in df.columns or df["fecha"].dropna().empty:
+        selected = pd.Timestamp(selected_date).normalize()
+        return selected.replace(day=1), selected
+
+    min_date = pd.Timestamp(df["fecha"].min()).normalize()
+    max_date = pd.Timestamp(df["fecha"].max()).normalize()
+    selected = pd.Timestamp(selected_date).normalize()
+    default_end = min(max_date, selected)
+
+    if default_end > SALES_CURVE_CUTOFF and (df["fecha"] <= SALES_CURVE_CUTOFF).any():
+        default_end = SALES_CURVE_CUTOFF
+
+    default_start = max(min_date, default_end.replace(day=1))
+    return default_start, default_end
+
+
+def normalize_date_period(period_value: object, default_start: pd.Timestamp, default_end: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    if isinstance(period_value, tuple) and len(period_value) == 2:
+        start_date, end_date = period_value
+    else:
+        start_date, end_date = default_start.date(), default_end.date()
+
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    if start > end:
+        start, end = end, start
+    return start, end
 
 
 def executive_summary_table(
@@ -3083,14 +3141,31 @@ def main() -> None:
     )
 
     with tab_overview:
-        sales_curve = daily_sales_curve_by_business(filtered)
+        default_curve_start, default_curve_end = default_curve_period(filtered, selected_date)
+        min_curve_date = pd.Timestamp(filtered["fecha"].min()).date() if not filtered.empty else default_curve_start.date()
+        max_curve_date = pd.Timestamp(filtered["fecha"].max()).date() if not filtered.empty else default_curve_end.date()
+        curve_period = st.date_input(
+            "Periodo curva de venta",
+            value=(default_curve_start.date(), default_curve_end.date()),
+            min_value=min_curve_date,
+            max_value=max_curve_date,
+            format="DD/MM/YYYY",
+            key="sales_curve_period",
+        )
+        curve_start, curve_end = normalize_date_period(curve_period, default_curve_start, default_curve_end)
+        curve_source = filtered[
+            (filtered["fecha"] >= curve_start) & (filtered["fecha"] <= curve_end)
+        ].copy()
+        curve_daily = curve_source.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+        sales_curve = daily_sales_curve_by_business(curve_source)
+        curve_title_period = f"del {curve_start.strftime('%d/%m/%Y')} al {curve_end.strftime('%d/%m/%Y')}"
         if sales_curve.empty:
             line = px.line(
-                daily,
+                curve_daily,
                 x="fecha",
                 y="hl",
                 markers=True,
-                title="HL diarios",
+                title=f"HL diarios {curve_title_period}",
                 color_discrete_sequence=["#1463ff"],
             )
         else:
@@ -3100,7 +3175,7 @@ def main() -> None:
                 y="hl",
                 color="grupo_venta",
                 markers=True,
-                title="HL diarios por negocio",
+                title=f"HL diarios por negocio {curve_title_period}",
                 category_orders={"grupo_venta": SALES_CURVE_ORDER},
                 color_discrete_map=SALES_CURVE_COLORS,
                 labels={"grupo_venta": "Negocio"},
@@ -3217,7 +3292,7 @@ def main() -> None:
         if annual_info is None or annual_filtered is None or annual_filtered.empty:
             st.warning("No se encontro archivo de venta anual para comparacion AA")
         else:
-            curve = year_comparison_curve(daily, annual_daily, selected_date)
+            curve = year_comparison_curve_range(daily, annual_daily, curve_start, curve_end)
             if curve.empty:
                 st.info("No hay datos AA para el periodo y filtros seleccionados.")
             else:
@@ -3227,7 +3302,7 @@ def main() -> None:
                     y="hl",
                     color="serie",
                     markers=True,
-                    title="Curva comparativa: venta diaria actual vs AA",
+                    title=f"Curva comparativa {curve_title_period}: venta diaria actual vs AA",
                     color_discrete_map={
                         "Venta diaria actual": "#1463ff",
                         "Venta diaria AA": "#f79009",
