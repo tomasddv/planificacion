@@ -574,6 +574,40 @@ def latest_daily_file_in_folder(folder: Path) -> Path | None:
     return latest_matching_file(folder, tuple(), ("anual", "bulto", "bultos"))
 
 
+def historical_sales_files_in_folder(folder: Path, current_file: Path | None = None) -> list[Path]:
+    if not folder.exists():
+        return []
+    excluded = {"anual", "bulto", "bultos", "objet", "cliente", "clientes", "auxiliar"}
+    month_terms = {
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "setiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
+    }
+    current_resolved = current_file.resolve() if current_file is not None and current_file.exists() else None
+    files: list[Path] = []
+    for path in folder.iterdir():
+        if not path.is_file() or path.suffix.lower() not in VALID_EXTENSIONS:
+            continue
+        if current_resolved is not None and path.resolve() == current_resolved:
+            continue
+        stem = clean_name(path.stem)
+        if "venta" not in stem or any(term in stem for term in excluded):
+            continue
+        if any(term in stem for term in month_terms):
+            files.append(path)
+    return sorted(files, key=lambda item: item.stat().st_mtime)
+
+
 def latest_annual_file_in_folder(folder: Path) -> Path | None:
     return latest_matching_file(folder, ("anual",))
 
@@ -2926,6 +2960,7 @@ def main() -> None:
 
     uploaded = st.sidebar.file_uploader("Carga manual si falla la carpeta", type=["txt", "csv"])
 
+    current_sales_file: Path | None = None
     try:
         if uploaded is not None:
             df, info = load_source_from_upload(uploaded.name, uploaded.getvalue())
@@ -2934,6 +2969,7 @@ def main() -> None:
             if latest is None:
                 st.warning("No encontre archivos TXT/CSV en la carpeta automatica. Use la carga manual.")
                 st.stop()
+            current_sales_file = latest
             df, info = load_source_from_path(str(latest), latest.stat().st_mtime_ns)
     except Exception as exc:
         st.error(f"No pude leer el archivo: {exc}")
@@ -2969,6 +3005,22 @@ def main() -> None:
         df = apply_auxiliary_segments(df, None)
         st.sidebar.warning("No se encontro archivo auxiliares para segmentos.")
     df = ensure_analysis_columns(df)
+
+    curve_history_df = pd.DataFrame(columns=df.columns)
+    curve_history_files = historical_sales_files_in_folder(data_dir, current_sales_file) if uploaded is None else []
+    if curve_history_files:
+        history_frames: list[pd.DataFrame] = []
+        for history_file in curve_history_files:
+            try:
+                history_df, _ = load_source_from_path(str(history_file), history_file.stat().st_mtime_ns)
+                history_df = apply_customer_channels(history_df, customer_channels)
+                history_df = apply_auxiliary_segments(history_df, aux_segments)
+                history_df = ensure_analysis_columns(history_df)
+                history_frames.append(history_df)
+            except Exception as exc:
+                st.sidebar.warning(f"No pude leer historico {history_file.name}: {exc}")
+        if history_frames:
+            curve_history_df = pd.concat(history_frames, ignore_index=True)
 
     objectives_df = default_objectives()
     objectives_info: SourceInfo | None = None
@@ -3049,6 +3101,9 @@ def main() -> None:
             st.sidebar.caption(f"Modificado AA: {annual_info.modified}")
     elif load_annual_comparison:
         st.sidebar.warning(annual_warning)
+    if curve_history_files:
+        loaded_names = ", ".join(path.name for path in curve_history_files)
+        st.sidebar.success(f"Historico curva: {loaded_names}")
 
     filtered, selected_date, dimension_filters = apply_filters(df)
     annual_filtered = apply_dimension_filters(ensure_analysis_columns(annual_df), dimension_filters) if annual_df is not None else None
@@ -3056,8 +3111,13 @@ def main() -> None:
         st.warning("No hay datos para los filtros seleccionados.")
         st.stop()
 
+    curve_base = pd.concat([curve_history_df, df], ignore_index=True) if not curve_history_df.empty else df.copy()
+    curve_filtered = apply_dimension_filters(ensure_analysis_columns(curve_base), dimension_filters)
+    if curve_filtered.empty:
+        curve_filtered = filtered.copy()
     historical_filtered = combine_current_with_history(filtered, annual_filtered)
     daily = filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
+    curve_daily_actual = curve_filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
     historical_daily = historical_filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
     annual_daily = (
         annual_filtered.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
@@ -3141,9 +3201,9 @@ def main() -> None:
     )
 
     with tab_overview:
-        default_curve_start, default_curve_end = default_curve_period(filtered, selected_date)
-        min_curve_date = pd.Timestamp(filtered["fecha"].min()).date() if not filtered.empty else default_curve_start.date()
-        max_curve_date = pd.Timestamp(filtered["fecha"].max()).date() if not filtered.empty else default_curve_end.date()
+        default_curve_start, default_curve_end = default_curve_period(curve_filtered, selected_date)
+        min_curve_date = pd.Timestamp(curve_filtered["fecha"].min()).date() if not curve_filtered.empty else default_curve_start.date()
+        max_curve_date = pd.Timestamp(curve_filtered["fecha"].max()).date() if not curve_filtered.empty else default_curve_end.date()
         curve_period = st.date_input(
             "Periodo curva de venta",
             value=(default_curve_start.date(), default_curve_end.date()),
@@ -3153,8 +3213,8 @@ def main() -> None:
             key="sales_curve_period",
         )
         curve_start, curve_end = normalize_date_period(curve_period, default_curve_start, default_curve_end)
-        curve_source = filtered[
-            (filtered["fecha"] >= curve_start) & (filtered["fecha"] <= curve_end)
+        curve_source = curve_filtered[
+            (curve_filtered["fecha"] >= curve_start) & (curve_filtered["fecha"] <= curve_end)
         ].copy()
         curve_daily = curve_source.groupby("fecha", as_index=False)["hl"].sum().sort_values("fecha")
         sales_curve = daily_sales_curve_by_business(curve_source)
@@ -3292,7 +3352,7 @@ def main() -> None:
         if annual_info is None or annual_filtered is None or annual_filtered.empty:
             st.warning("No se encontro archivo de venta anual para comparacion AA")
         else:
-            curve = year_comparison_curve_range(daily, annual_daily, curve_start, curve_end)
+            curve = year_comparison_curve_range(curve_daily_actual, annual_daily, curve_start, curve_end)
             if curve.empty:
                 st.info("No hay datos AA para el periodo y filtros seleccionados.")
             else:
