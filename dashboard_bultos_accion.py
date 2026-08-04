@@ -669,8 +669,8 @@ def load_top_extensions(sheet_url: str) -> pd.DataFrame:
             "cliente_codigo": pd.to_numeric(sheet[code_col], errors="coerce").astype("Int64").astype("string"),
             "cliente": sheet[columns.get("cliente", code_col)].fillna("").astype(str).str.strip(),
             "accion": sheet[action_col].fillna("").astype(str).str.strip().str.upper(),
-            "fecha_extension": parse_date_series(sheet[columns.get("fecha_extension", columns.get("actualizado", code_col))])
-            if "fecha_extension" in columns or "actualizado" in columns
+            "fecha_extension": parse_date_series(sheet[columns["fecha_extension"]])
+            if "fecha_extension" in columns
             else pd.NaT,
             "primer_tope": sales_app.parse_argentine_number(sheet[columns.get("primer_tope", code_col)])
             if "primer_tope" in columns
@@ -688,14 +688,18 @@ def load_top_extensions(sheet_url: str) -> pd.DataFrame:
         }
     )
     result = result[result["cliente_codigo"].notna() & result["accion"].isin(["CORE", "VALUE"])].copy()
-    result["fecha_extension"] = result["fecha_extension"].fillna(today_date())
+    result["activa"] = result["activa"].fillna(False) & result["fecha_extension"].notna()
     return result.drop_duplicates(["cliente_codigo", "accion"], keep="last")
 
 
 def extension_purchase_since(data: pd.DataFrame, extensions: pd.DataFrame, action: str) -> pd.DataFrame:
     if data.empty or extensions.empty:
         return pd.DataFrame(columns=["cliente_codigo", f"segundo_tramo_comprado_{action}"])
-    active = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
+    active = extensions[
+        (extensions["accion"] == action)
+        & extensions["activa"].fillna(False)
+        & extensions["fecha_extension"].notna()
+    ].copy()
     if active.empty:
         return pd.DataFrame(columns=["cliente_codigo", f"segundo_tramo_comprado_{action}"])
     active["cliente_codigo"] = pd.to_numeric(active["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
@@ -728,7 +732,11 @@ def merge_top_extensions(summary: pd.DataFrame, extensions: pd.DataFrame, data: 
 
     result["cliente_codigo"] = pd.to_numeric(result["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
     for action in ["CORE", "VALUE"]:
-        action_extensions = extensions[(extensions["accion"] == action) & extensions["activa"].fillna(False)].copy()
+        action_extensions = extensions[
+            (extensions["accion"] == action)
+            & extensions["activa"].fillna(False)
+            & extensions["fecha_extension"].notna()
+        ].copy()
         if action_extensions.empty:
             continue
         action_extensions = action_extensions[["cliente_codigo", "fecha_extension", "comentario"]].rename(
@@ -1089,8 +1097,7 @@ def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
             else:
                 second_top = first_top if first_top else second_top
             extension_date = pd.to_datetime(row.get(extension_date_col), errors="coerce")
-            if pd.isna(extension_date):
-                extension_date = today_date()
+            extension_active = bool(row.get(extension_col, False)) and not pd.isna(extension_date)
             rows.append(
                 {
                     "cliente_codigo": row["cliente_codigo"],
@@ -1099,8 +1106,8 @@ def extension_editor_rows(summary: pd.DataFrame) -> pd.DataFrame:
                     "accion": action,
                     "bultos": float(row.get(bultos_col) or 0),
                     "primer_tope": first_top,
-                    "extension_pedida": bool(row.get(extension_col, False)),
-                    "fecha_extension": pd.Timestamp(extension_date).date(),
+                    "extension_pedida": extension_active,
+                    "fecha_extension": pd.Timestamp(extension_date).date() if extension_active else None,
                     "segundo_tope": float(second_top) if not pd.isna(second_top) else np.nan,
                     "comentario": str(row.get(comment_col) or ""),
                 }
@@ -1114,7 +1121,10 @@ def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object
     payload_rows = []
     for _, row in rows.iterrows():
         primer_tope = pd.to_numeric(row.get("primer_tope"), errors="coerce")
-        fecha_extension = date_text(row.get("fecha_extension")) or today_date().strftime("%Y-%m-%d")
+        extension_active = bool(row.get("extension_pedida", False))
+        fecha_extension = date_text(row.get("fecha_extension")) if extension_active else ""
+        if extension_active and not fecha_extension:
+            fecha_extension = today_date().strftime("%Y-%m-%d")
         payload_rows.append(
             {
                 "cliente_codigo": str(row.get("cliente_codigo") or "").strip(),
@@ -1124,7 +1134,7 @@ def save_top_extensions(webapp_url: str, rows: pd.DataFrame) -> dict[str, object
                 "fecha_extension": fecha_extension,
                 "primer_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
                 "segundo_tope": 0.0 if pd.isna(primer_tope) else float(primer_tope),
-                "activa": bool(row.get("extension_pedida", False)),
+                "activa": extension_active,
                 "comentario": str(row.get("comentario") or "").strip(),
             }
         )
