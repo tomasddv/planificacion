@@ -182,10 +182,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     return target if target.exists() and any(target.iterdir()) else None
 
 
-DEFAULT_DATA_DIR = (
-    resolve_google_drive_folder("GOOGLE_DRIVE_PLANIFICACION_URL", "planificacion")
-    or next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
-)
+DEFAULT_DATA_DIR = next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
 
 
 def current_data_dir(force_refresh: bool = False) -> Path:
