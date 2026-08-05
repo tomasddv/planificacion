@@ -4,6 +4,7 @@ import html
 import io
 import shutil
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -637,4 +638,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        st.set_page_config(page_title=APP_TITLE, page_icon=":snowflake:", layout="wide")
+        st.error(f"Error controlado en {APP_TITLE}: {type(exc).__name__}: {exc}")
+        st.code(traceback.format_exc())
