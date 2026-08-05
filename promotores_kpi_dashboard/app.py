@@ -2,13 +2,19 @@ from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
+import re
 import shutil
+import sys
 import time
 import urllib.request
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_data import (
     DAY_COLS,
@@ -44,7 +50,6 @@ DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
 }
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
 DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
-PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 
@@ -714,15 +719,15 @@ def filter_business_sku_purchase_range(
     route: str = "Todas",
 ):
     filtered = ventas_df[(ventas_df["fecha"].ge(pd.Timestamp(start_date))) & (ventas_df["fecha"].le(pd.Timestamp(end_date)))].copy()
-    if business != "Todos":
-        filtered = filtered[business_mask(filtered, business)]
     if isinstance(skus, str):
         selected_skus = [skus]
     else:
         selected_skus = list(skus or [])
     selected_skus = [sku for sku in selected_skus if sku and sku != "Todos"]
     if selected_skus:
-        filtered = filtered[filtered["producto"].fillna("").isin(selected_skus)]
+        filtered = filtered[sku_selection_mask(filtered, selected_skus)]
+    elif business != "Todos":
+        filtered = filtered[business_mask(filtered, business)]
     if rutas_base is not None and rutas_base.empty:
         return filtered.iloc[0:0].copy()
     if rutas_base is not None and not rutas_base.empty:
@@ -747,7 +752,60 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
     if business != "Todos":
         scoped = scoped[business_mask(scoped, business)]
     values = sorted(value for value in scoped["producto"].fillna("").unique() if value)
+    search_text = scoped.get("sku_search_text", pd.Series("", index=scoped.index)).fillna("").str.upper()
+    if search_text.str.contains("PURE GOLD| SA PG |P GOLD|PORRON PURE GOLD", regex=True, na=False).any():
+        values = ["PURE GOLD 330/PORRON", "PURE GOLD 473 LATA", "PURE GOLD TODOS"] + values
     return ["Todos"] + values
+
+
+def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
+    product = ventas_df["producto"].fillna("")
+    search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
+    mask = product.isin([sku for sku in selected_skus if not str(sku).upper().startswith("PURE GOLD")])
+
+    selected_upper = {str(sku).upper() for sku in selected_skus}
+    for sku in selected_upper:
+        if sku.startswith("PURE GOLD"):
+            continue
+        sku_tokens = [token for token in re.findall(r"[A-Z0-9]+", sku) if len(token) >= 3]
+        meaningful_tokens = [
+            token for token in sku_tokens
+            if token not in {"X6", "X12", "X24", "4X6", "4X4", "2024", "IMP", "CAR", "BOT", "PET", "VIDRIO", "LATAS", "LATA", "CC"}
+        ]
+        if sku:
+            mask = mask | search_text.str.contains(re.escape(sku), regex=True, na=False)
+        if len(meaningful_tokens) >= 2:
+            token_hits = pd.Series(True, index=ventas_df.index)
+            for token in meaningful_tokens[:4]:
+                token_hits = token_hits & search_text.str.contains(re.escape(token), regex=True, na=False)
+            mask = mask | token_hits
+
+    pure_gold_base = search_text.str.contains("PURE GOLD| SA PG |P GOLD", regex=True, na=False)
+    if "PURE GOLD TODOS" in selected_upper:
+        mask = mask | pure_gold_base
+    if "PURE GOLD 330/PORRON" in selected_upper:
+        mask = mask | (
+            pure_gold_base
+            & search_text.str.contains("330|B330|PORRON|SIXPACK", regex=True, na=False)
+        )
+    if "PURE GOLD 473 LATA" in selected_upper:
+        mask = mask | (
+            pure_gold_base
+            & search_text.str.contains("473|L473|LATA|LATAS|CAN", regex=True, na=False)
+        )
+    for sku in selected_upper:
+        if "PG" in sku or "P GOLD" in sku or "PURE GOLD" in sku:
+            if "330" in sku or "B330" in sku or "PORRON" in sku:
+                mask = mask | (
+                    pure_gold_base
+                    & search_text.str.contains("330|B330|PORRON|SIXPACK", regex=True, na=False)
+                )
+            if "473" in sku or "L473" in sku or "LATA" in sku:
+                mask = mask | (
+                    pure_gold_base
+                    & search_text.str.contains("473|L473|LATA|LATAS|CAN", regex=True, na=False)
+                )
+    return mask
 
 
 def business_mask(ventas_df: pd.DataFrame, business: str):
