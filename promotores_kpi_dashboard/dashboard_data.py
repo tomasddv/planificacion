@@ -364,6 +364,7 @@ def load_ventas(path: Path, brand_map: pd.DataFrame, mix_map: pd.DataFrame, cali
             "ruta": venta["Ruta"].map(clean_code),
             "cliente": venta["Cod. Cliente"].map(clean_code),
             "cliente_nombre": venta["Descripción"].map(clean_text),
+            "articulo_descripcion": venta["Descripción.2"].map(clean_text),
             "marca": venta["Descripción.3"].map(clean_text),
             "calibre": venta["Descripción.4"].map(clean_text),
             "division": venta["Descripción.5"].map(clean_text),
@@ -387,6 +388,8 @@ def load_ventas(path: Path, brand_map: pd.DataFrame, mix_map: pd.DataFrame, cali
     df = df.merge(caliber_map, on="calibre_key", how="left")
     df["calibre_unificado"] = df["calibre_unificado"].fillna(df["calibre"])
     df[["ung_top", "calibres_cpr"]] = df[["ung_top", "calibres_cpr"]].fillna("")
+    search_cols = ["articulo_descripcion", "marca", "marca_unificada", "producto", "calibre", "calibre_unificado"]
+    df["sku_search_text"] = df[search_cols].fillna("").agg(" ".join, axis=1).str.upper()
     return df
 
 
