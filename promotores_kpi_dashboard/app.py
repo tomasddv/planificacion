@@ -4,17 +4,12 @@ import json
 import os
 import re
 import shutil
-import sys
 import time
 import urllib.request
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from dashboard_data import (
     DAY_COLS,
@@ -50,6 +45,7 @@ DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
 }
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
 DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
+PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 
@@ -755,17 +751,28 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
     search_text = scoped.get("sku_search_text", pd.Series("", index=scoped.index)).fillna("").str.upper()
     if search_text.str.contains("PURE GOLD| SA PG |P GOLD|PORRON PURE GOLD", regex=True, na=False).any():
         values = ["PURE GOLD 330/PORRON", "PURE GOLD 473 LATA", "PURE GOLD TODOS"] + values
+    if search_text.str.contains("GATORADE|\\bGATO\\b|\\bGAT\\b|\\bGTD\\b", regex=True, na=False).any():
+        values = ["GATORADE TODOS"] + values
     return ["Todos"] + values
 
 
 def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     product = ventas_df["producto"].fillna("")
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
-    mask = product.isin([sku for sku in selected_skus if not str(sku).upper().startswith("PURE GOLD")])
-
     selected_upper = {str(sku).upper() for sku in selected_skus}
+    virtual_prefixes = ("PURE GOLD", "GATORADE")
+    direct_skus = [sku for sku in selected_skus if not str(sku).upper().startswith(virtual_prefixes)]
+    mask = product.isin(direct_skus)
+
+    selected_rows = ventas_df[product.isin(direct_skus)]
+    selected_brands = set(selected_rows.get("marca", pd.Series(dtype=str)).fillna("").str.upper())
+    gatorade_selected = (
+        "GATORADE TODOS" in selected_upper
+        or "GATORADE" in selected_brands
+        or any("GATORADE" in sku or "GATO" in sku or re.search(r"\bGAT\b|\bGT\b", sku) for sku in selected_upper)
+    )
     for sku in selected_upper:
-        if sku.startswith("PURE GOLD"):
+        if sku.startswith(("PURE GOLD", "GATORADE")):
             continue
         sku_tokens = [token for token in re.findall(r"[A-Z0-9]+", sku) if len(token) >= 3]
         meaningful_tokens = [
@@ -779,6 +786,10 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
             for token in meaningful_tokens[:4]:
                 token_hits = token_hits & search_text.str.contains(re.escape(token), regex=True, na=False)
             mask = mask | token_hits
+
+    gatorade_base = search_text.str.contains("GATORADE|\\bGATO\\b|\\bGAT\\b|\\bGTD\\b|COMBO GTD", regex=True, na=False)
+    if gatorade_selected:
+        mask = mask | gatorade_base
 
     pure_gold_base = search_text.str.contains("PURE GOLD| SA PG |P GOLD", regex=True, na=False)
     if "PURE GOLD TODOS" in selected_upper:
