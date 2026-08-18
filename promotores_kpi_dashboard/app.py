@@ -862,6 +862,13 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     mask = product.isin(direct_skus)
     if brand_all_selections:
         mask = mask | brand.isin(brand_all_selections) | unified_brand.isin(brand_all_selections)
+        water_combo = water_combo_mask(search_text)
+        if any("ECO" in brand_name for brand_name in brand_all_selections):
+            mask = mask | (water_combo & search_text.str.contains("ECO", regex=True, na=False))
+        if any("NESTLE" in brand_name or "PUREZA" in brand_name for brand_name in brand_all_selections):
+            mask = mask | (water_combo & search_text.str.contains("NESTLE|NPV|PUREZA", regex=True, na=False))
+        if "GLACIAR" in brand_all_selections:
+            mask = mask | (water_combo & search_text.str.contains("GLACIAR", regex=True, na=False))
 
     def is_pepsi_black_alias(value: str):
         return bool(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", value))
@@ -936,15 +943,23 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     return mask
 
 
+def water_combo_mask(search_text: pd.Series):
+    return (
+        search_text.str.contains("\\bCOMBO\\b", regex=True, na=False)
+        & search_text.str.contains("BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA", regex=True, na=False)
+    )
+
+
 def business_mask(ventas_df: pd.DataFrame, business: str):
     division = ventas_df["division"].fillna("").str.upper()
     unidad = ventas_df["unidad_negocio"].fillna("").str.upper() if "unidad_negocio" in ventas_df.columns else ""
+    search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     if business == "CZA":
         return division.isin(["CERVEZAS", "ENV CERVEZAS"])
     if business == "UNG":
         return division.isin(["GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES"])
     if business == "AGUAS":
-        return division.eq("AGUAS")
+        return division.eq("AGUAS") | water_combo_mask(search_text)
     if business == "MKTP":
         return division.str.contains("MKTPLACE|MARKETPLACE", na=False) | pd.Series(unidad, index=ventas_df.index).str.contains("MARKETPLACE", na=False)
     if business == "SPIRITS":
