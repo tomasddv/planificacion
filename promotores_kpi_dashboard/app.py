@@ -756,8 +756,21 @@ def filter_business_sku_purchase_range(
         route_scope = rutas_base.copy()
         if route != "Todas":
             route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
-        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
-        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+        route_cols = [
+            col
+            for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor", "cliente"]
+            if col in route_scope.columns
+        ]
+        route_keys = route_scope[route_cols].drop_duplicates()
+        sales_without_route_owner = filtered.drop(
+            columns=[
+                col
+                for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor"]
+                if col in filtered.columns
+            ],
+            errors="ignore",
+        )
+        filtered = route_keys.merge(sales_without_route_owner, on="cliente", how="inner")
     return filtered
 
 
@@ -773,24 +786,56 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
     scoped = ventas_df.copy()
     if business != "Todos":
         scoped = scoped[business_mask(scoped, business)]
-    values = sorted(value for value in scoped["producto"].fillna("").unique() if value)
+    scoped["_marca_option"] = scoped["marca"].fillna("").str.upper()
+    scoped["_producto_option"] = scoped["producto"].fillna("")
+    values = []
+    for brand_value in sorted(value for value in scoped["_marca_option"].unique() if value):
+        values.append(f"{brand_value} TODOS")
+        brand_products = sorted(
+            value
+            for value in scoped.loc[scoped["_marca_option"].eq(brand_value), "_producto_option"].unique()
+            if value
+        )
+        values.extend(brand_products)
+    unbranded_products = sorted(
+        value
+        for value in scoped.loc[scoped["_marca_option"].eq(""), "_producto_option"].unique()
+        if value
+    )
+    values.extend(unbranded_products)
     search_text = scoped.get("sku_search_text", pd.Series("", index=scoped.index)).fillna("").str.upper()
+    special_options = []
     if search_text.str.contains("PURE GOLD| SA PG |P GOLD|PORRON PURE GOLD", regex=True, na=False).any():
-        values = ["PURE GOLD 330/PORRON", "PURE GOLD 473 LATA", "PURE GOLD TODOS"] + values
+        special_options.extend(["PURE GOLD 330/PORRON", "PURE GOLD 473 LATA", "PURE GOLD TODOS"])
     if search_text.str.contains("GATORADE|\\bGATO\\b|\\bGAT\\b|\\bGTD\\b", regex=True, na=False).any():
-        values = ["GATORADE TODOS"] + values
+        special_options.append("GATORADE TODOS")
     if search_text.str.contains("PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\\.?500|COMBO BLACK", regex=True, na=False).any():
-        values = ["PEPSI BLACK TODOS"] + values
+        special_options.append("PEPSI BLACK TODOS")
+    values = list(dict.fromkeys(special_options + values))
     return ["Todos"] + values
 
 
 def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     product = ventas_df["producto"].fillna("")
+    brand = ventas_df["marca"].fillna("").str.upper()
+    unified_brand = ventas_df.get("marca_unificada", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     selected_upper = {str(sku).upper() for sku in selected_skus}
     virtual_prefixes = ("PURE GOLD", "GATORADE", "PEPSI BLACK")
-    direct_skus = [sku for sku in selected_skus if not str(sku).upper().startswith(virtual_prefixes)]
+    brand_all_selections = {
+        sku[:-6].strip()
+        for sku in selected_upper
+        if sku.endswith(" TODOS") and not sku.startswith(virtual_prefixes)
+    }
+    direct_skus = [
+        sku
+        for sku in selected_skus
+        if not str(sku).upper().startswith(virtual_prefixes)
+        and not str(sku).upper().endswith(" TODOS")
+    ]
     mask = product.isin(direct_skus)
+    if brand_all_selections:
+        mask = mask | brand.isin(brand_all_selections) | unified_brand.isin(brand_all_selections)
 
     def is_pepsi_black_alias(value: str):
         return bool(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", value))
@@ -1226,7 +1271,7 @@ if view == "Acumulado mensual":
     month_end = pd.Timestamp(max(fechas))
     month_start = month_end.replace(day=1)
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
-    month_cols = st.columns([1.1, 1.3, 1.4, 1.6, 1.25, 1.8])
+    month_cols = st.columns([1.0, 1.15, 1.25, 1.35, 1.15, 1.8, 1.6])
     with month_cols[0]:
         month_route = st.selectbox("Grupo ruta", route_options, index=0, key="month_route")
     with month_cols[1]:
@@ -1239,6 +1284,23 @@ if view == "Acumulado mensual":
     with month_cols[4]:
         month_license = st.selectbox("Licencia alcohol", ["Todas", "Con licencia", "Sin licencia"], index=0, key="month_license")
     with month_cols[5]:
+        month_focus_for_options, _month_metric_for_options = parse_kpi_option(month_option)
+        month_sales_for_options = filter_sales_by_focus_range(
+            ventas,
+            month_start,
+            month_end,
+            month_focus_for_options,
+            None,
+            "Todas",
+        )
+        month_sku_options = sku_options_for_business(month_sales_for_options, "Todos")
+        month_skus_selected = st.multiselect("Marca / SKU", month_sku_options, default=["Todos"], key="month_skus")
+        if not month_skus_selected:
+            month_skus_selected = ["Todos"]
+        month_skus_filter = [sku for sku in month_skus_selected if sku != "Todos"]
+        if not month_skus_filter:
+            month_skus_filter = ["Todos"]
+    with month_cols[6]:
         st.caption(f"Mes acumulado {month_start.date()} a {month_end.date()} · TBD = SKUs vendidos por cliente.")
 
     month_focus, month_metric = parse_kpi_option(month_option)
@@ -1248,6 +1310,8 @@ if view == "Acumulado mensual":
     month_promotores = apply_supervisor_filter(promotores, month_supervisor)
     month_promotores = apply_promoter_filter(month_promotores, month_promoter)
     month_filtered = filter_sales_by_focus_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
+    if month_skus_filter != ["Todos"]:
+        month_filtered = month_filtered[sku_selection_mask(month_filtered, month_skus_filter)].copy()
     month_filtered = apply_supervisor_filter(month_filtered, month_supervisor)
     month_filtered = apply_promoter_filter(month_filtered, month_promoter)
     month_summary = summarize(month_filtered, month_rutas_base, month_promotores, month_end, month_route)
