@@ -23,6 +23,7 @@ from dashboard_data import (
     load_auxiliares,
     load_dataset,
     load_ventas,
+    only_new_sku_activations_range,
     summarize,
     trend_by_focus,
 )
@@ -699,6 +700,31 @@ def filter_sales_by_focus_purchase_range(
     return filtered
 
 
+def apply_route_scope_by_client(filtered: pd.DataFrame, rutas_base: pd.DataFrame | None, route: str = "Todas"):
+    if rutas_base is not None and rutas_base.empty:
+        return filtered.iloc[0:0].copy()
+    if rutas_base is None or rutas_base.empty:
+        return filtered
+    route_scope = rutas_base.copy()
+    if route != "Todas":
+        route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
+    route_cols = [
+        col
+        for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor", "cliente"]
+        if col in route_scope.columns
+    ]
+    route_keys = route_scope[route_cols].drop_duplicates()
+    sales_without_route_owner = filtered.drop(
+        columns=[
+            col
+            for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor"]
+            if col in filtered.columns
+        ],
+        errors="ignore",
+    )
+    return route_keys.merge(sales_without_route_owner, on="cliente", how="inner")
+
+
 def filter_any_purchase_range(
     ventas_df: pd.DataFrame,
     start_date,
@@ -1309,9 +1335,12 @@ if view == "Acumulado mensual":
     month_rutas_base = apply_license_selection(month_rutas_base, month_license)
     month_promotores = apply_supervisor_filter(promotores, month_supervisor)
     month_promotores = apply_promoter_filter(month_promotores, month_promoter)
-    month_filtered = filter_sales_by_focus_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
     if month_skus_filter != ["Todos"]:
-        month_filtered = month_filtered[sku_selection_mask(month_filtered, month_skus_filter)].copy()
+        month_sku_sales = ventas[sku_selection_mask(ventas, month_skus_filter)].copy()
+        month_filtered = only_new_sku_activations_range(month_sku_sales, month_start, month_end)
+        month_filtered = apply_route_scope_by_client(month_filtered, month_rutas_base, month_route)
+    else:
+        month_filtered = filter_sales_by_focus_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
     month_filtered = apply_supervisor_filter(month_filtered, month_supervisor)
     month_filtered = apply_promoter_filter(month_filtered, month_promoter)
     month_summary = summarize(month_filtered, month_rutas_base, month_promotores, month_end, month_route)
