@@ -681,8 +681,21 @@ def filter_sales_by_focus_purchase_range(
         route_scope = rutas_base.copy()
         if route != "Todas":
             route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
-        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
-        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+        route_cols = [
+            col
+            for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor", "cliente"]
+            if col in route_scope.columns
+        ]
+        route_keys = route_scope[route_cols].drop_duplicates()
+        sales_without_route_owner = filtered.drop(
+            columns=[
+                col
+                for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor"]
+                if col in filtered.columns
+            ],
+            errors="ignore",
+        )
+        filtered = route_keys.merge(sales_without_route_owner, on="cliente", how="inner")
     return filtered
 
 
@@ -700,8 +713,21 @@ def filter_any_purchase_range(
         route_scope = rutas_base.copy()
         if route != "Todas":
             route_scope = route_scope[route_scope["grupo_ruta"].eq(route)]
-        route_keys = route_scope[["vendedor", "cliente"]].drop_duplicates()
-        filtered = filtered.merge(route_keys, on=["vendedor", "cliente"], how="inner")
+        route_cols = [
+            col
+            for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor", "cliente"]
+            if col in route_scope.columns
+        ]
+        route_keys = route_scope[route_cols].drop_duplicates()
+        sales_without_route_owner = filtered.drop(
+            columns=[
+                col
+                for col in ["grupo_ruta", "ruta", "supervisor", "promotor", "vendedor"]
+                if col in filtered.columns
+            ],
+            errors="ignore",
+        )
+        filtered = route_keys.merge(sales_without_route_owner, on="cliente", how="inner")
     return filtered
 
 
@@ -753,6 +779,8 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
         values = ["PURE GOLD 330/PORRON", "PURE GOLD 473 LATA", "PURE GOLD TODOS"] + values
     if search_text.str.contains("GATORADE|\\bGATO\\b|\\bGAT\\b|\\bGTD\\b", regex=True, na=False).any():
         values = ["GATORADE TODOS"] + values
+    if search_text.str.contains("PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\\.?500|COMBO BLACK", regex=True, na=False).any():
+        values = ["PEPSI BLACK TODOS"] + values
     return ["Todos"] + values
 
 
@@ -760,9 +788,12 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     product = ventas_df["producto"].fillna("")
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     selected_upper = {str(sku).upper() for sku in selected_skus}
-    virtual_prefixes = ("PURE GOLD", "GATORADE")
+    virtual_prefixes = ("PURE GOLD", "GATORADE", "PEPSI BLACK")
     direct_skus = [sku for sku in selected_skus if not str(sku).upper().startswith(virtual_prefixes)]
     mask = product.isin(direct_skus)
+
+    def is_pepsi_black_alias(value: str):
+        return bool(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", value))
 
     selected_rows = ventas_df[product.isin(direct_skus)]
     selected_brands = set(selected_rows.get("marca", pd.Series(dtype=str)).fillna("").str.upper())
@@ -771,8 +802,15 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
         or "GATORADE" in selected_brands
         or any("GATORADE" in sku or "GATO" in sku or re.search(r"\bGAT\b|\bGT\b", sku) for sku in selected_upper)
     )
+    pepsi_black_selected = (
+        "PEPSI BLACK TODOS" in selected_upper
+        or "PEPSI BLACK" in selected_brands
+        or any(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", sku) for sku in selected_upper)
+    )
     for sku in selected_upper:
-        if sku.startswith(("PURE GOLD", "GATORADE")):
+        if sku.startswith(("PURE GOLD", "GATORADE", "PEPSI BLACK")):
+            continue
+        if is_pepsi_black_alias(sku):
             continue
         sku_tokens = [token for token in re.findall(r"[A-Z0-9]+", sku) if len(token) >= 3]
         meaningful_tokens = [
@@ -790,6 +828,14 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     gatorade_base = search_text.str.contains("GATORADE|\\bGATO\\b|\\bGAT\\b|\\bGTD\\b|COMBO GTD", regex=True, na=False)
     if gatorade_selected:
         mask = mask | gatorade_base
+
+    pepsi_black_base = search_text.str.contains(
+        "PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\\.?500|COMBO BLACK",
+        regex=True,
+        na=False,
+    )
+    if pepsi_black_selected:
+        mask = mask | pepsi_black_base
 
     pure_gold_base = search_text.str.contains("PURE GOLD| SA PG |P GOLD", regex=True, na=False)
     if "PURE GOLD TODOS" in selected_upper:
