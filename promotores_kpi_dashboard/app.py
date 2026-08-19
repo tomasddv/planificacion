@@ -623,6 +623,49 @@ def non_buyer_clients(filtered: pd.DataFrame, rutas_base: pd.DataFrame, route_gr
     return result.sort_values(["grupo_ruta", "promotor", "ruta", "razon_social", "cliente"])
 
 
+def last_day_client_activations(filtered: pd.DataFrame):
+    if filtered.empty or "fecha" not in filtered.columns:
+        return pd.DataFrame(), None
+    last_date = pd.Timestamp(filtered["fecha"].dropna().max())
+    if pd.isna(last_date):
+        return pd.DataFrame(), None
+    previous_clients = set(
+        filtered.loc[filtered["fecha"].lt(last_date), "cliente"].dropna().unique()
+    )
+    current = filtered[
+        filtered["fecha"].eq(last_date)
+        & ~filtered["cliente"].isin(previous_clients)
+    ].copy()
+    if current.empty:
+        return current.iloc[0:0].copy(), last_date
+    for col in ["producto", "articulo_descripcion", "marca", "division"]:
+        if col not in current.columns:
+            current[col] = ""
+    group_cols = [
+        col
+        for col in [
+            "grupo_ruta",
+            "ruta",
+            "supervisor",
+            "promotor",
+            "vendedor",
+            "cliente",
+            "cliente_nombre",
+        ]
+        if col in current.columns
+    ]
+    activation = (
+        current.groupby(group_cols, as_index=False)
+        .agg(
+            productos=("producto", lambda s: ", ".join(sorted(set(x for x in s.fillna("").astype(str) if x))) or "Combo"),
+            articulos=("articulo_descripcion", lambda s: ", ".join(sorted(set(x for x in s.fillna("").astype(str) if x)))[:240]),
+            marcas=("marca", lambda s: ", ".join(sorted(set(x for x in s.fillna("").astype(str) if x))) or "Combo"),
+            skus=("producto", "nunique"),
+        )
+    )
+    return activation.sort_values(["grupo_ruta", "promotor", "ruta", "cliente"]), last_date
+
+
 def route_customer_count(rutas_base: pd.DataFrame, route_group: str):
     scope = rutas_base.copy()
     if route_group != "Todas":
@@ -1870,13 +1913,16 @@ if view == "No compradores SKU":
     sku_filtered = apply_supervisor_filter(sku_filtered, sku_supervisor)
     sku_filtered = apply_promoter_filter(sku_filtered, sku_promoter)
     sku_table = non_buyer_clients(sku_filtered, sku_rutas_base, sku_route)
+    sku_last_activations, sku_last_activation_date = last_day_client_activations(sku_filtered)
 
     st.subheader("Clientes no compradores por negocio / SKU")
     st.caption(sku_label)
-    sku_metric_cols = st.columns(3)
+    sku_metric_cols = st.columns(4)
     sku_metric_cols[0].metric("Clientes en ruta", f"{route_customer_count(sku_rutas_base, sku_route):,}")
     sku_metric_cols[1].metric("Clientes con compra", f"{sku_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
     sku_metric_cols[2].metric("No compradores", f"{len(sku_table):,}")
+    last_day_label = sku_last_activation_date.date().isoformat() if sku_last_activation_date is not None else "-"
+    sku_metric_cols[3].metric("Activados último día", f"{sku_last_activations[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}", last_day_label)
 
     sku_view = sku_table.rename(
         columns={
@@ -1897,6 +1943,30 @@ if view == "No compradores SKU":
             sku_view["Razón Social"],
         )
     st.dataframe(sku_view, use_container_width=True, hide_index=True)
+
+    st.subheader("Clientes activados último día")
+    if sku_last_activation_date is None:
+        st.caption("No hay ventas para los filtros seleccionados.")
+    else:
+        st.caption(
+            f"Activaciones nuevas del {sku_last_activation_date.date()}: clientes que no habían comprado antes el negocio/SKU filtrado en el período."
+        )
+    activation_view = sku_last_activations.rename(
+        columns={
+            "grupo_ruta": "Grupo",
+            "ruta": "Ruta",
+            "supervisor": "Supervisor",
+            "promotor": "Promotor",
+            "vendedor": "Vnd.",
+            "cliente": "Cliente",
+            "cliente_nombre": "Razón Social",
+            "productos": "Producto/SKU",
+            "articulos": "Artículo venta",
+            "marcas": "Marca",
+            "skus": "SKUs",
+        }
+    )
+    st.dataframe(activation_view, use_container_width=True, hide_index=True)
 
 if view == "Gestión CNC":
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
