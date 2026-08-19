@@ -663,7 +663,14 @@ def last_day_client_activations(filtered: pd.DataFrame):
             skus=("producto", "nunique"),
         )
     )
-    return activation.sort_values(["grupo_ruta", "promotor", "ruta", "cliente"]), last_date
+    sort_cols = [
+        col
+        for col in ["grupo_ruta", "promotor", "ruta", "cliente"]
+        if col in activation.columns
+    ]
+    if sort_cols:
+        activation = activation.sort_values(sort_cols)
+    return activation, last_date
 
 
 def promoter_accumulated_table(rutas_base: pd.DataFrame, filtered: pd.DataFrame, last_activations: pd.DataFrame):
