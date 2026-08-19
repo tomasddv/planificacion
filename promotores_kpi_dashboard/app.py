@@ -666,6 +666,41 @@ def last_day_client_activations(filtered: pd.DataFrame):
     return activation.sort_values(["grupo_ruta", "promotor", "ruta", "cliente"]), last_date
 
 
+def promoter_accumulated_table(rutas_base: pd.DataFrame, filtered: pd.DataFrame, last_activations: pd.DataFrame):
+    cartera = (
+        rutas_base.drop_duplicates(["vendedor", "cliente"])
+        .groupby(["supervisor", "promotor"], as_index=False)
+        .agg(cartera=("cliente", "count"))
+    )
+    if filtered.empty:
+        metrics = pd.DataFrame(columns=["supervisor", "promotor", "activados_acum", "tbd_acum"])
+    else:
+        tmp = filtered.copy()
+        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"].fillna("")
+        metrics = (
+            tmp.groupby(["supervisor", "promotor"], as_index=False)
+            .agg(
+                activados_acum=("cliente", "nunique"),
+                tbd_acum=("cliente_sku", "nunique"),
+            )
+        )
+    if last_activations.empty:
+        daily = pd.DataFrame(columns=["supervisor", "promotor", "activaciones_dia"])
+    else:
+        daily = (
+            last_activations.drop_duplicates(["vendedor", "cliente"])
+            .groupby(["supervisor", "promotor"], as_index=False)
+            .agg(activaciones_dia=("cliente", "count"))
+        )
+    table = cartera.merge(metrics, on=["supervisor", "promotor"], how="left")
+    table = table.merge(daily, on=["supervisor", "promotor"], how="left")
+    for col in ["activados_acum", "tbd_acum", "activaciones_dia"]:
+        table[col] = table[col].fillna(0).astype(int)
+    table["restantes"] = (table["cartera"] - table["activados_acum"]).clip(lower=0)
+    table["avance"] = table.apply(lambda row: row["activados_acum"] / row["cartera"] if row["cartera"] else 0, axis=1)
+    return table.sort_values(["supervisor", "promotor"])
+
+
 def route_customer_count(rutas_base: pd.DataFrame, route_group: str):
     scope = rutas_base.copy()
     if route_group != "Todas":
@@ -1345,7 +1380,7 @@ route_options = ["Todas"] + route_groups
 
 view = st.radio(
     "Vista",
-    ["Acumulado mensual", "Planificación diaria", "No compradores", "No compradores SKU", "Gestión CNC"],
+    ["Acumulado mensual", "Acumulado promotores", "Planificación diaria", "No compradores", "No compradores SKU", "Gestión CNC"],
     horizontal=True,
     label_visibility="collapsed",
     key="main_view",
@@ -1429,6 +1464,90 @@ if view == "Acumulado mensual":
             {
                 "Clientes Ruta": "{:,.0f}",
                 "Activados Acum.": "{:,.0f}",
+                "TBD Acum.": "{:,.0f}",
+                "Restantes": "{:,.0f}",
+                "Avance": "{:.1%}",
+            }
+        ).bar(subset=["Avance"], color="#94A3B8", vmin=0, vmax=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+if view == "Acumulado promotores":
+    promoter_end = pd.Timestamp(max(fechas))
+    promoter_start = promoter_end.replace(day=1)
+    supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
+    promoter_cols = st.columns([1.25, 1.45, 1.25, 1.8, 1.7])
+    with promoter_cols[0]:
+        acc_supervisor = st.selectbox("Supervisor", supervisor_options, index=0, key="acc_prom_supervisor")
+    with promoter_cols[1]:
+        acc_option = st.selectbox("KPI acumulado", options, index=0, key="acc_prom_kpi")
+    with promoter_cols[2]:
+        acc_license = st.selectbox("Licencia alcohol", ["Todas", "Con licencia", "Sin licencia"], index=0, key="acc_prom_license")
+    with promoter_cols[3]:
+        acc_focus_for_options, _acc_metric_for_options = parse_kpi_option(acc_option)
+        acc_sales_for_options = filter_sales_by_focus_range(
+            ventas,
+            promoter_start,
+            promoter_end,
+            acc_focus_for_options,
+            None,
+            "Todas",
+        )
+        acc_sku_options = sku_options_for_business(acc_sales_for_options, "Todos")
+        acc_skus_selected = st.multiselect("Marca / SKU", acc_sku_options, default=["Todos"], key="acc_prom_skus")
+        if not acc_skus_selected:
+            acc_skus_selected = ["Todos"]
+        acc_skus_filter = [sku for sku in acc_skus_selected if sku != "Todos"]
+        if not acc_skus_filter:
+            acc_skus_filter = ["Todos"]
+    with promoter_cols[4]:
+        st.caption(f"Mes acumulado {promoter_start.date()} a {promoter_end.date()} · Todas las rutas unificadas por promotor.")
+
+    acc_focus, _acc_metric = parse_kpi_option(acc_option)
+    acc_rutas_base = apply_supervisor_filter(rutas_grupo, acc_supervisor)
+    acc_rutas_base = apply_license_selection(acc_rutas_base, acc_license)
+    if acc_skus_filter != ["Todos"]:
+        acc_sku_sales = ventas[sku_selection_mask(ventas, acc_skus_filter)].copy()
+        acc_filtered = only_new_sku_activations_range(acc_sku_sales, promoter_start, promoter_end)
+        acc_filtered = apply_route_scope_by_client(acc_filtered, acc_rutas_base, "Todas")
+    else:
+        acc_filtered = filter_sales_by_focus_range(ventas, promoter_start, promoter_end, acc_focus, acc_rutas_base, "Todas")
+    acc_filtered = apply_supervisor_filter(acc_filtered, acc_supervisor)
+    acc_last_activations, acc_last_date = last_day_client_activations(acc_filtered)
+    acc_table = promoter_accumulated_table(acc_rutas_base, acc_filtered, acc_last_activations)
+
+    st.subheader("Acumulado por promotor")
+    if acc_last_date is not None:
+        st.caption(f"Activaciones del día = altas nuevas del {acc_last_date.date()} que no habían comprado antes el filtro seleccionado en el mes.")
+    total_cartera = int(acc_table["cartera"].sum()) if not acc_table.empty else 0
+    total_activados = int(acc_table["activados_acum"].sum()) if not acc_table.empty else 0
+    total_dia = int(acc_table["activaciones_dia"].sum()) if not acc_table.empty else 0
+    total_tbd = int(acc_table["tbd_acum"].sum()) if not acc_table.empty else 0
+    acc_metric_cols = st.columns(4)
+    acc_metric_cols[0].metric("Cartera", f"{total_cartera:,}")
+    acc_metric_cols[1].metric("Activados acumulados", f"{total_activados:,}")
+    acc_metric_cols[2].metric("Activaciones del día", f"{total_dia:,}")
+    acc_metric_cols[3].metric("TBD acumulado", f"{total_tbd:,}")
+
+    acc_view = acc_table.rename(
+        columns={
+            "supervisor": "Supervisor",
+            "promotor": "Promotor",
+            "cartera": "Cartera",
+            "activados_acum": "Activados Acum.",
+            "activaciones_dia": "Activaciones Día",
+            "tbd_acum": "TBD Acum.",
+            "restantes": "Restantes",
+            "avance": "Avance",
+        }
+    )
+    st.dataframe(
+        acc_view.style.format(
+            {
+                "Cartera": "{:,.0f}",
+                "Activados Acum.": "{:,.0f}",
+                "Activaciones Día": "{:,.0f}",
                 "TBD Acum.": "{:,.0f}",
                 "Restantes": "{:,.0f}",
                 "Avance": "{:.1%}",
