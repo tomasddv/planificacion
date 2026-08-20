@@ -2235,6 +2235,27 @@ if view == "No compradores SKU":
             sku_view["Nombre Fantasía"].ne(""),
             sku_view["Razón Social"],
         )
+    activation_key_cols = ["Grupo", "Ruta", "Supervisor", "Promotor", "Vnd."]
+    if not sku_last_activations.empty:
+        last_activation_counts = (
+            sku_last_activations.rename(
+                columns={
+                    "grupo_ruta": "Grupo",
+                    "ruta": "Ruta",
+                    "supervisor": "Supervisor",
+                    "promotor": "Promotor",
+                    "vendedor": "Vnd.",
+                    "cliente": "Cliente",
+                }
+            )
+            .drop_duplicates(activation_key_cols + ["Cliente"])
+            .groupby(activation_key_cols, as_index=False)
+            .agg(**{"Activaciones último día": ("Cliente", "count")})
+        )
+        sku_view = sku_view.merge(last_activation_counts, on=activation_key_cols, how="left")
+    else:
+        sku_view["Activaciones último día"] = 0
+    sku_view["Activaciones último día"] = sku_view["Activaciones último día"].fillna(0).astype(int)
     st.dataframe(sku_view, use_container_width=True, hide_index=True)
 
     st.subheader("Clientes activados último día")
