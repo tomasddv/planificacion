@@ -631,10 +631,10 @@ def non_buyer_clients(filtered: pd.DataFrame, rutas_base: pd.DataFrame, route_gr
     return result.sort_values(["grupo_ruta", "promotor", "ruta", "razon_social", "cliente"])
 
 
-def last_day_client_activations(filtered: pd.DataFrame):
+def last_day_client_activations(filtered: pd.DataFrame, target_date=None):
     if filtered.empty or "fecha" not in filtered.columns:
-        return pd.DataFrame(), None
-    last_date = pd.Timestamp(filtered["fecha"].dropna().max())
+        return pd.DataFrame(), pd.Timestamp(target_date) if target_date is not None else None
+    last_date = pd.Timestamp(target_date) if target_date is not None else pd.Timestamp(filtered["fecha"].dropna().max())
     if pd.isna(last_date):
         return pd.DataFrame(), None
     previous_clients = set(
@@ -1685,7 +1685,7 @@ if view == "Acumulado promotores":
     else:
         acc_filtered = filter_sales_by_focus_purchase_range(ventas, promoter_start, promoter_end, acc_focus, acc_rutas_base, "Todas")
     acc_filtered = apply_supervisor_filter(acc_filtered, acc_supervisor)
-    acc_last_activations, acc_last_date = last_day_client_activations(acc_filtered)
+    acc_last_activations, acc_last_date = last_day_client_activations(acc_filtered, promoter_end)
     acc_table = promoter_accumulated_table(acc_rutas_base, acc_filtered, acc_last_activations)
 
     st.subheader("Acumulado por promotor")
@@ -2206,7 +2206,7 @@ if view == "No compradores SKU":
     sku_filtered = apply_supervisor_filter(sku_filtered, sku_supervisor)
     sku_filtered = apply_promoter_filter(sku_filtered, sku_promoter)
     sku_table = non_buyer_clients(sku_filtered, sku_rutas_base, sku_route)
-    sku_last_activations, sku_last_activation_date = last_day_client_activations(sku_filtered)
+    sku_last_activations, sku_last_activation_date = last_day_client_activations(sku_filtered, sku_end)
 
     st.subheader("Clientes no compradores por negocio / SKU")
     st.caption(sku_label)
