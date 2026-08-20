@@ -16,7 +16,6 @@ from dashboard_data import (
     DAY_GROUPS,
     EXCLUDED_VENDORS,
     KPI_FOCUSES,
-    cliente_sku_key,
     filter_client_activations_by_focus_range,
     filter_sales_by_focus,
     filter_sales_by_focus_range,
@@ -51,6 +50,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 COMBO_OPTION_PREFIX = "COMBO/PROMO: "
+
+
+def cliente_sku_key(df: pd.DataFrame):
+    producto = df.get("producto", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    articulo = df.get("articulo_descripcion", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    sku = producto.where(producto.ne(""), articulo)
+    return df["cliente"].fillna("").astype(str) + "|" + sku
 
 st.set_page_config(page_title="Dashboard Promotores", layout="wide")
 
