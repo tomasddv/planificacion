@@ -49,6 +49,7 @@ DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
+COMBO_OPTION_PREFIX = "COMBO/PROMO: "
 
 st.set_page_config(page_title="Dashboard Promotores", layout="wide")
 
@@ -922,8 +923,85 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
         special_options.append("GATORADE TODOS")
     if search_text.str.contains("PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\\.?500|COMBO BLACK", regex=True, na=False).any():
         special_options.append("PEPSI BLACK TODOS")
+    special_options.extend(dynamic_combo_promo_options(ventas_df if business != "Todos" else scoped))
     values = list(dict.fromkeys(special_options + values))
     return ["Todos"] + values
+
+
+def combo_promo_marker_mask(search_text: pd.Series):
+    return search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
+
+
+def combo_option_label(description: str):
+    return f"{COMBO_OPTION_PREFIX}{str(description).strip()}"
+
+
+def dynamic_combo_promo_options(ventas_df: pd.DataFrame):
+    if ventas_df.empty or "articulo_descripcion" not in ventas_df.columns:
+        return []
+    search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
+    combo_rows = ventas_df[combo_promo_marker_mask(search_text)].copy()
+    if combo_rows.empty:
+        return []
+    descriptions = (
+        combo_rows["articulo_descripcion"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .loc[lambda s: s.ne("")]
+        .drop_duplicates()
+        .sort_values()
+    )
+    return [combo_option_label(desc) for desc in descriptions]
+
+
+def combo_business_guess(search_value: str):
+    text = str(search_value or "").upper()
+    if re.search(
+        r"LATON|LATONES|\b710\b|L710|SA 710|LATA|LATAS|CERVEZA|PATAGONIA|\bPAT\b|"
+        r"MICHELOB|PURE GOLD|\b0\.0\b|BRAHMA|QUILMES|BUD|CORONA|STELLA|ANDES|QC|BR",
+        text,
+    ):
+        return "CZA"
+    if re.search(r"BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA", text):
+        return "AGUAS"
+    if re.search(r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA", text):
+        return "UNG"
+    if re.search(r"\bGIN\b|SPIRITS", text):
+        return "SPIRITS"
+    return "Revisar"
+
+
+def combo_promo_inventory(ventas_df: pd.DataFrame):
+    if ventas_df.empty or "articulo_descripcion" not in ventas_df.columns:
+        return pd.DataFrame(columns=["Descripcion", "Negocio sugerido", "Clientes", "Filas"])
+    search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
+    combo_rows = ventas_df[combo_promo_marker_mask(search_text)].copy()
+    if combo_rows.empty:
+        return pd.DataFrame(columns=["Descripcion", "Negocio sugerido", "Clientes", "Filas"])
+    combo_rows["_desc_combo"] = combo_rows["articulo_descripcion"].fillna("").astype(str).str.strip()
+    combo_rows["_search_combo"] = combo_rows.get("sku_search_text", pd.Series("", index=combo_rows.index)).fillna("").astype(str)
+    inventory = (
+        combo_rows[combo_rows["_desc_combo"].ne("")]
+        .groupby("_desc_combo", as_index=False)
+        .agg(
+            Clientes=("cliente", "nunique"),
+            Filas=("cliente", "size"),
+            _search=("_search_combo", "first"),
+        )
+    )
+    inventory["Negocio sugerido"] = inventory["_search"].map(combo_business_guess)
+    inventory = inventory.rename(columns={"_desc_combo": "Descripcion"}).drop(columns=["_search"])
+    return inventory.sort_values(["Negocio sugerido", "Clientes", "Descripcion"], ascending=[True, False, True])
+
+
+def selected_combo_descriptions(selected_skus: list[str]):
+    descriptions = []
+    for sku in selected_skus:
+        value = str(sku).strip()
+        if value.upper().startswith(COMBO_OPTION_PREFIX):
+            descriptions.append(value[len(COMBO_OPTION_PREFIX):].strip())
+    return descriptions
 
 
 def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
@@ -933,9 +1011,12 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     selected_upper = {str(sku).upper() for sku in selected_skus}
     virtual_prefixes = ("PURE GOLD", "GATORADE", "PEPSI BLACK")
+    combo_descriptions = selected_combo_descriptions(selected_skus)
+    combo_option_prefix_upper = COMBO_OPTION_PREFIX.upper()
+    selected_upper_without_combos = {sku for sku in selected_upper if not sku.startswith(combo_option_prefix_upper)}
     brand_all_selections = {
         sku[:-6].strip()
-        for sku in selected_upper
+        for sku in selected_upper_without_combos
         if sku.endswith(" TODOS") and not sku.startswith(virtual_prefixes)
     }
     direct_skus = [
@@ -943,8 +1024,12 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
         for sku in selected_skus
         if not str(sku).upper().startswith(virtual_prefixes)
         and not str(sku).upper().endswith(" TODOS")
+        and not str(sku).upper().startswith(COMBO_OPTION_PREFIX)
     ]
     mask = product.isin(direct_skus)
+    if combo_descriptions:
+        description = ventas_df.get("articulo_descripcion", pd.Series("", index=ventas_df.index)).fillna("").astype(str).str.strip()
+        mask = mask | description.isin(combo_descriptions)
     if brand_all_selections:
         mask = mask | brand.isin(brand_all_selections) | unified_brand.isin(brand_all_selections)
         water_combo = water_combo_mask(search_text)
@@ -954,6 +1039,31 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
             mask = mask | (water_combo & search_text.str.contains("NESTLE|NPV|PUREZA", regex=True, na=False))
         if "GLACIAR" in brand_all_selections:
             mask = mask | (water_combo & search_text.str.contains("GLACIAR", regex=True, na=False))
+        brand_combo_aliases = {
+            "BRAHMA": r"BRAHMA|\bBR\b",
+            "QUILMES": r"QUILMES|\bQC\b",
+            "BUDWEISER": r"BUD|BUDWEISER",
+            "PATAGONIA": r"PATAGONIA|\bPAT\b",
+            "MICHELOB ULTRA": r"MICHELOB",
+            "STELLA ARTOIS": r"STELLA",
+            "CORONA": r"CORONA",
+            "ANDES ORIGEN": r"ANDES",
+        }
+        beer_combo = beer_combo_mask(search_text)
+        for brand_name, pattern in brand_combo_aliases.items():
+            if brand_name in brand_all_selections:
+                mask = mask | (beer_combo & search_text.str.contains(pattern, regex=True, na=False))
+        nabs_combo_aliases = {
+            "PEPSI": r"\bPEPSI\b",
+            "MIRINDA": r"MIRINDA",
+            "7UP": r"\b7UP\b",
+            "RED BULL": r"RED\s*BULL|REDBULL",
+            "GATORADE": r"GATORADE|\bGTD\b",
+        }
+        nabs_combo = nabs_combo_mask(search_text)
+        for brand_name, pattern in nabs_combo_aliases.items():
+            if brand_name in brand_all_selections:
+                mask = mask | (nabs_combo & search_text.str.contains(pattern, regex=True, na=False))
 
     def is_pepsi_black_alias(value: str):
         return bool(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", value))
@@ -961,16 +1071,17 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     selected_rows = ventas_df[product.isin(direct_skus)]
     selected_brands = set(selected_rows.get("marca", pd.Series(dtype=str)).fillna("").str.upper())
     gatorade_selected = (
-        "GATORADE TODOS" in selected_upper
+        "GATORADE TODOS" in selected_upper_without_combos
         or "GATORADE" in selected_brands
-        or any("GATORADE" in sku or "GATO" in sku or re.search(r"\bGAT\b|\bGT\b", sku) for sku in selected_upper)
+        or any("GATORADE" in sku or "GATO" in sku or re.search(r"\bGAT\b|\bGT\b", sku) for sku in selected_upper_without_combos)
     )
     pepsi_black_selected = (
-        "PEPSI BLACK TODOS" in selected_upper
+        "PEPSI BLACK TODOS" in selected_upper_without_combos
         or "PEPSI BLACK" in selected_brands
-        or any(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", sku) for sku in selected_upper)
+        or any(re.search(r"PEPSI.*BLACK|PEP BLACK|PEP BL|BLACK 2\.?500", sku) for sku in selected_upper_without_combos)
     )
-    for sku in selected_upper:
+    latones_selected = any(re.search(r"LATON|LATONES|\b710\b|L710", sku) for sku in selected_upper_without_combos)
+    for sku in selected_upper_without_combos:
         if sku.startswith(("PURE GOLD", "GATORADE", "PEPSI BLACK")):
             continue
         if is_pepsi_black_alias(sku):
@@ -1000,20 +1111,23 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     if pepsi_black_selected:
         mask = mask | pepsi_black_base
 
+    if latones_selected:
+        mask = mask | latones_combo_mask(search_text)
+
     pure_gold_base = search_text.str.contains("PURE GOLD| SA PG |P GOLD", regex=True, na=False)
-    if "PURE GOLD TODOS" in selected_upper:
+    if "PURE GOLD TODOS" in selected_upper_without_combos:
         mask = mask | pure_gold_base
-    if "PURE GOLD 330/PORRON" in selected_upper:
+    if "PURE GOLD 330/PORRON" in selected_upper_without_combos:
         mask = mask | (
             pure_gold_base
             & search_text.str.contains("330|B330|PORRON|SIXPACK", regex=True, na=False)
         )
-    if "PURE GOLD 473 LATA" in selected_upper:
+    if "PURE GOLD 473 LATA" in selected_upper_without_combos:
         mask = mask | (
             pure_gold_base
             & search_text.str.contains("473|L473|LATA|LATAS|CAN", regex=True, na=False)
         )
-    for sku in selected_upper:
+    for sku in selected_upper_without_combos:
         if "PG" in sku or "P GOLD" in sku or "PURE GOLD" in sku:
             if "330" in sku or "B330" in sku or "PORRON" in sku:
                 mask = mask | (
@@ -1030,8 +1144,45 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
 
 def water_combo_mask(search_text: pd.Series):
     return (
-        search_text.str.contains("\\bCOMBO\\b", regex=True, na=False)
+        search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
         & search_text.str.contains("BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA", regex=True, na=False)
+    )
+
+
+def beer_combo_mask(search_text: pd.Series):
+    return (
+        search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
+        & search_text.str.contains(
+            r"LATON|LATONES|\b710\b|L710|SA 710|LATA|LATAS|CERVEZA|PATAGONIA|\bPAT\b|"
+            r"MICHELOB|PURE GOLD|\b0\.0\b|BRAHMA|QUILMES|BUD|CORONA|STELLA|ANDES|QC|BR",
+            regex=True,
+            na=False,
+        )
+    )
+
+
+def latones_combo_mask(search_text: pd.Series):
+    return (
+        search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
+        & search_text.str.contains(r"LATON|LATONES|\b710\b|L710|SA 710|710 OW", regex=True, na=False)
+    )
+
+
+def nabs_combo_mask(search_text: pd.Series):
+    return (
+        search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
+        & search_text.str.contains(
+            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA",
+            regex=True,
+            na=False,
+        )
+    )
+
+
+def spirits_combo_mask(search_text: pd.Series):
+    return (
+        search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
+        & search_text.str.contains(r"\bGIN\b|SPIRITS", regex=True, na=False)
     )
 
 
@@ -1040,15 +1191,15 @@ def business_mask(ventas_df: pd.DataFrame, business: str):
     unidad = ventas_df["unidad_negocio"].fillna("").str.upper() if "unidad_negocio" in ventas_df.columns else ""
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     if business == "CZA":
-        return division.isin(["CERVEZAS", "ENV CERVEZAS"])
+        return division.isin(["CERVEZAS", "ENV CERVEZAS"]) | beer_combo_mask(search_text)
     if business == "UNG":
-        return division.isin(["GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES"])
+        return division.isin(["GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES"]) | nabs_combo_mask(search_text)
     if business == "AGUAS":
         return division.eq("AGUAS") | water_combo_mask(search_text)
     if business == "MKTP":
         return division.str.contains("MKTPLACE|MARKETPLACE", na=False) | pd.Series(unidad, index=ventas_df.index).str.contains("MARKETPLACE", na=False)
     if business == "SPIRITS":
-        return division.str.contains("SPIRITS", na=False)
+        return division.str.contains("SPIRITS", na=False) | spirits_combo_mask(search_text)
     if business == "OTROS":
         known = (
             division.isin(["CERVEZAS", "ENV CERVEZAS", "GASEOSAS", "BEBIDAS SABORIZADAS", "ISOTONICAS", "BEB ENERGIZANTES", "AGUAS"])
@@ -2248,3 +2399,7 @@ if view == "Gestión CNC":
 with st.expander("Fuentes cargadas"):
     for label, path in dataset["sources"].items():
         st.write(f"{label}: `{path}`")
+    combo_inventory = combo_promo_inventory(ventas)
+    st.write(f"Combos/promos detectados: `{len(combo_inventory)}`")
+    if not combo_inventory.empty:
+        st.dataframe(combo_inventory, use_container_width=True, hide_index=True)

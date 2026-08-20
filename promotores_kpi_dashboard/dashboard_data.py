@@ -550,10 +550,23 @@ def filter_sales(ventas: pd.DataFrame, fecha, filter_type: str, filter_value: st
 def focus_sales(ventas: pd.DataFrame, focus: str):
     filtered = ventas.copy()
     marca = brand_upper(filtered)
+    search_text = filtered.get("sku_search_text", pd.Series("", index=filtered.index)).fillna("").str.upper()
     cza = filtered["division"].eq("CERVEZAS")
+    combo = search_text.str.contains(r"\bCOMBO\b|\bPROMO\b", regex=True, na=False)
+    beer_combo = combo & search_text.str.contains(
+        r"LATON|LATONES|\b710\b|L710|SA 710|LATA|LATAS|CERVEZA|PATAGONIA|\bPAT\b|"
+        r"MICHELOB|PURE GOLD|\b0\.0\b|BRAHMA|QUILMES|BUD|CORONA|STELLA|ANDES|QC|BR",
+        regex=True,
+        na=False,
+    )
+    latones_combo = combo & search_text.str.contains(
+        r"LATON|LATONES|\b710\b|L710|SA 710|710 OW",
+        regex=True,
+        na=False,
+    )
     balanced = marca.isin(BALANCED_BRANDS)
     if focus == "Total CZA":
-        return filtered[cza]
+        return filtered[cza | beer_combo]
     if focus == "Core":
         core = (
             marca.eq("BRAHMA")
@@ -580,12 +593,18 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
         ) & ~balanced
         return filtered[cza & premium]
     if focus == "Latones 710":
-        return filtered[filtered["calibre_unificado"].eq("LATON 710 CC")]
+        return filtered[filtered["calibre_unificado"].eq("LATON 710 CC") | latones_combo]
     if focus == "Balanced Choices":
         return filtered[cza & balanced]
     if focus == "Nabs":
         nabs_divisions = {"AGUAS", "BEB ENERGIZANTES", "BEBIDAS SABORIZADAS", "GASEOSAS", "ISOTONICAS"}
-        return filtered[filtered["division"].isin(nabs_divisions)]
+        nabs_combo = combo & search_text.str.contains(
+            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA|"
+            r"BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA",
+            regex=True,
+            na=False,
+        )
+        return filtered[filtered["division"].isin(nabs_divisions) | nabs_combo]
     if focus == "Eficiencia de ventas":
         return filtered
     return filtered
