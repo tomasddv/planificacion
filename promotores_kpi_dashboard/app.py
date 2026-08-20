@@ -16,6 +16,7 @@ from dashboard_data import (
     DAY_GROUPS,
     EXCLUDED_VENDORS,
     KPI_FOCUSES,
+    cliente_sku_key,
     filter_client_activations_by_focus_range,
     filter_sales_by_focus,
     filter_sales_by_focus_range,
@@ -591,7 +592,7 @@ def monthly_route_table(filtered: pd.DataFrame, rutas_base: pd.DataFrame, route_
     else:
         scope_keys = scope[["grupo_ruta", "ruta", "promotor", "vendedor", "cliente"]].drop_duplicates()
         tmp = filtered.merge(scope_keys, on=["vendedor", "cliente"], how="inner", suffixes=("_venta", ""))
-        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"]
+        tmp["cliente_sku"] = cliente_sku_key(tmp)
         activations = (
             tmp.groupby(["grupo_ruta", "ruta", "promotor", "vendedor"], as_index=False)
             .agg(activados=("cliente", "nunique"), tbd=("cliente_sku", "nunique"))
@@ -684,7 +685,7 @@ def promoter_accumulated_table(rutas_base: pd.DataFrame, filtered: pd.DataFrame,
         metrics = pd.DataFrame(columns=["supervisor", "promotor", "activados_acum", "tbd_acum"])
     else:
         tmp = filtered.copy()
-        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"].fillna("")
+        tmp["cliente_sku"] = cliente_sku_key(tmp)
         metrics = (
             tmp.groupby(["supervisor", "promotor"], as_index=False)
             .agg(
@@ -1588,10 +1589,13 @@ if view == "Acumulado mensual":
     month_promotores = apply_promoter_filter(month_promotores, month_promoter)
     if month_skus_filter != ["Todos"]:
         month_sku_sales = ventas[sku_selection_mask(ventas, month_skus_filter)].copy()
-        month_filtered = only_new_sku_activations_range(month_sku_sales, month_start, month_end)
+        month_filtered = month_sku_sales[
+            month_sku_sales["fecha"].ge(pd.Timestamp(month_start))
+            & month_sku_sales["fecha"].le(pd.Timestamp(month_end))
+        ].copy()
         month_filtered = apply_route_scope_by_client(month_filtered, month_rutas_base, month_route)
     else:
-        month_filtered = filter_sales_by_focus_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
+        month_filtered = filter_sales_by_focus_purchase_range(ventas, month_start, month_end, month_focus, month_rutas_base, month_route)
     month_filtered = apply_supervisor_filter(month_filtered, month_supervisor)
     month_filtered = apply_promoter_filter(month_filtered, month_promoter)
     month_summary = summarize(month_filtered, month_rutas_base, month_promotores, month_end, month_route)
@@ -1667,10 +1671,13 @@ if view == "Acumulado promotores":
     acc_rutas_base = apply_license_selection(acc_rutas_base, acc_license)
     if acc_skus_filter != ["Todos"]:
         acc_sku_sales = ventas[sku_selection_mask(ventas, acc_skus_filter)].copy()
-        acc_filtered = only_new_sku_activations_range(acc_sku_sales, promoter_start, promoter_end)
+        acc_filtered = acc_sku_sales[
+            acc_sku_sales["fecha"].ge(pd.Timestamp(promoter_start))
+            & acc_sku_sales["fecha"].le(pd.Timestamp(promoter_end))
+        ].copy()
         acc_filtered = apply_route_scope_by_client(acc_filtered, acc_rutas_base, "Todas")
     else:
-        acc_filtered = filter_sales_by_focus_range(ventas, promoter_start, promoter_end, acc_focus, acc_rutas_base, "Todas")
+        acc_filtered = filter_sales_by_focus_purchase_range(ventas, promoter_start, promoter_end, acc_focus, acc_rutas_base, "Todas")
     acc_filtered = apply_supervisor_filter(acc_filtered, acc_supervisor)
     acc_last_activations, acc_last_date = last_day_client_activations(acc_filtered)
     acc_table = promoter_accumulated_table(acc_rutas_base, acc_filtered, acc_last_activations)
@@ -1939,7 +1946,7 @@ if view == "Planificación diaria":
 
 if view == "No compradores":
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
-    nb_cols = st.columns([1.35, 1.35, 1.05, 1.25, 1.35, 1.5, 1.5])
+    nb_cols = st.columns([1.25, 1.25, 1.0, 1.15, 1.25, 1.35, 1.15, 1.45])
     with nb_cols[0]:
         nb_period_type = st.selectbox(
             "Tipo período",
@@ -2007,6 +2014,8 @@ if view == "No compradores":
         nb_focus_options = ["Todos"] + options
         nb_option = st.selectbox("Foco", nb_focus_options, index=0, key="nb_focus")
     with nb_cols[6]:
+        nb_license = st.selectbox("Licencia alcohol", ["Todas", "Con licencia", "Sin licencia"], index=0, key="nb_license")
+    with nb_cols[7]:
         st.caption("Lista clientes de la ruta que no compraron el foco en el período seleccionado.")
 
     nb_sales_source = ventas
@@ -2032,7 +2041,7 @@ if view == "No compradores":
     nb_focus, _nb_metric = parse_kpi_option(nb_option)
     nb_rutas_base = apply_supervisor_filter(rutas_grupo, nb_supervisor)
     nb_rutas_base = apply_promoter_filter(nb_rutas_base, nb_promoter)
-    nb_rutas_base = apply_alcohol_license_filter(nb_rutas_base, nb_option)
+    nb_rutas_base = apply_license_selection(nb_rutas_base, nb_license)
     if nb_option == "Todos":
         nb_filtered = filter_any_purchase_range(nb_sales_source, nb_start, nb_end, nb_rutas_base, nb_route)
     else:
@@ -2071,7 +2080,7 @@ if view == "No compradores":
 
 if view == "No compradores SKU":
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
-    sku_cols = st.columns([1.35, 1.35, 1.05, 1.25, 1.35, 1.15, 1.8, 1.5])
+    sku_cols = st.columns([1.25, 1.25, 1.0, 1.15, 1.25, 1.05, 1.15, 1.7, 1.45])
     with sku_cols[0]:
         sku_period_type = st.selectbox(
             "Tipo período",
@@ -2158,6 +2167,8 @@ if view == "No compradores SKU":
     with sku_cols[5]:
         sku_business = st.selectbox("Negocio", business_options(sku_sales_source), index=0, key="sku_business")
     with sku_cols[6]:
+        sku_license = st.selectbox("Licencia alcohol", ["Todas", "Con licencia", "Sin licencia"], index=0, key="sku_license")
+    with sku_cols[7]:
         period_sales_for_options = sku_sales_source[
             (sku_sales_source["fecha"].ge(pd.Timestamp(sku_start))) & (sku_sales_source["fecha"].le(pd.Timestamp(sku_end)))
         ]
@@ -2168,7 +2179,7 @@ if view == "No compradores SKU":
         sku_products_filter = [sku for sku in sku_products_selected if sku != "Todos"]
         if not sku_products_filter:
             sku_products_filter = ["Todos"]
-    with sku_cols[7]:
+    with sku_cols[8]:
         if sku_products_filter == ["Todos"]:
             st.caption("Clientes de la ruta que no compraron el negocio/SKU en el período seleccionado.")
         else:
@@ -2176,8 +2187,7 @@ if view == "No compradores SKU":
 
     sku_rutas_base = apply_supervisor_filter(rutas_grupo, sku_supervisor)
     sku_rutas_base = apply_promoter_filter(sku_rutas_base, sku_promoter)
-    if sku_business == "CZA":
-        sku_rutas_base = sku_rutas_base[sku_rutas_base["licencia_alcohol"].fillna("").str.upper().eq("SI")].copy()
+    sku_rutas_base = apply_license_selection(sku_rutas_base, sku_license)
     sku_filtered = filter_business_sku_purchase_range(
         sku_sales_source,
         sku_start,

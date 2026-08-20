@@ -610,6 +610,16 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     return filtered
 
 
+def sku_value(df: pd.DataFrame):
+    producto = df.get("producto", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    articulo = df.get("articulo_descripcion", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    return producto.where(producto.ne(""), articulo)
+
+
+def cliente_sku_key(df: pd.DataFrame):
+    return df["cliente"].fillna("").astype(str) + "|" + sku_value(df)
+
+
 def only_new_sku_activations(ventas: pd.DataFrame, fecha):
     fecha = pd.Timestamp(fecha)
     current = ventas[ventas["fecha"].eq(fecha)].copy()
@@ -617,12 +627,12 @@ def only_new_sku_activations(ventas: pd.DataFrame, fecha):
         return current
     previous_keys = set(
         ventas[ventas["fecha"].lt(fecha)]
-        .assign(cliente_producto=lambda df: df["cliente"] + "|" + df["producto"])
+        .assign(cliente_producto=cliente_sku_key)
         ["cliente_producto"]
         .dropna()
         .unique()
     )
-    current["cliente_producto"] = current["cliente"] + "|" + current["producto"]
+    current["cliente_producto"] = cliente_sku_key(current)
     return current[~current["cliente_producto"].isin(previous_keys)].drop(columns=["cliente_producto"])
 
 
@@ -634,14 +644,14 @@ def only_new_sku_activations_range(ventas: pd.DataFrame, start_date, end_date):
         return current
     previous_keys = set(
         ventas[ventas["fecha"].lt(start_date)]
-        .assign(cliente_producto=lambda df: df["cliente"] + "|" + df["producto"])
+        .assign(cliente_producto=cliente_sku_key)
         ["cliente_producto"]
         .dropna()
         .unique()
     )
-    current["cliente_producto"] = current["cliente"] + "|" + current["producto"]
+    current["cliente_producto"] = cliente_sku_key(current)
     current = current[~current["cliente_producto"].isin(previous_keys)].copy()
-    current = current.sort_values("fecha").drop_duplicates(["cliente", "producto"], keep="first")
+    current = current.sort_values("fecha").drop_duplicates(["cliente_producto"], keep="first")
     return current.drop(columns=["cliente_producto"])
 
 
@@ -739,7 +749,7 @@ def summarize(filtered_sales: pd.DataFrame, rutas_base: pd.DataFrame, promotores
         metrics = pd.DataFrame(columns=["vendedor", "clientes_compra", "brand_distribution", "importe_neto", "cantidad"])
     else:
         tmp = filtered_sales.copy()
-        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"]
+        tmp["cliente_sku"] = cliente_sku_key(tmp)
         metrics = (
             tmp.groupby("vendedor", as_index=False)
             .agg(
@@ -773,7 +783,7 @@ def trend(ventas: pd.DataFrame, filter_type: str, filter_value: str):
         if tmp.empty:
             rows.append({"fecha": fecha, "clientes_compra": 0, "brand_distribution": 0})
             continue
-        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"]
+        tmp["cliente_sku"] = cliente_sku_key(tmp)
         rows.append(
             {
                 "fecha": fecha,
@@ -792,7 +802,7 @@ def trend_by_focus(ventas: pd.DataFrame, focus: str, rutas_dia: pd.DataFrame | N
             rows.append({"fecha": fecha, "clientes_compra": 0, "brand_distribution": 0})
             continue
         tmp = tmp.copy()
-        tmp["cliente_sku"] = tmp["cliente"] + "|" + tmp["producto"]
+        tmp["cliente_sku"] = cliente_sku_key(tmp)
         rows.append(
             {
                 "fecha": fecha,
