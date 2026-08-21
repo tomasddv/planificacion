@@ -2258,6 +2258,52 @@ if view == "No compradores SKU":
     sku_view["Activaciones último día"] = sku_view["Activaciones último día"].fillna(0).astype(int)
     st.dataframe(sku_view, use_container_width=True, hide_index=True)
 
+    st.subheader("Resumen por promotor")
+    sku_summary_scope = sku_rutas_base.copy()
+    if sku_route != "Todas":
+        sku_summary_scope = sku_summary_scope[sku_summary_scope["grupo_ruta"].eq(sku_route)].copy()
+    sku_promoter_base = sku_summary_scope[["promotor"]].drop_duplicates()
+    sku_cartera = (
+        sku_summary_scope.drop_duplicates(["promotor", "vendedor", "cliente"])
+        .groupby("promotor", as_index=False)
+        .agg(cartera=("cliente", "count"))
+    )
+    if sku_filtered.empty:
+        sku_accumulated = pd.DataFrame(columns=["promotor", "acumulado"])
+    else:
+        sku_accumulated = (
+            sku_filtered.drop_duplicates(["promotor", "vendedor", "cliente"])
+            .groupby("promotor", as_index=False)
+            .agg(acumulado=("cliente", "count"))
+        )
+    if sku_last_activations.empty:
+        sku_today = pd.DataFrame(columns=["promotor", "hoy"])
+    else:
+        sku_today = (
+            sku_last_activations.drop_duplicates(["promotor", "vendedor", "cliente"])
+            .groupby("promotor", as_index=False)
+            .agg(hoy=("cliente", "count"))
+        )
+    sku_promoter_summary = (
+        sku_promoter_base
+        .merge(sku_cartera, on="promotor", how="left")
+        .merge(sku_accumulated, on="promotor", how="left")
+        .merge(sku_today, on="promotor", how="left")
+    )
+    for col in ["cartera", "acumulado", "hoy"]:
+        sku_promoter_summary[col] = sku_promoter_summary[col].fillna(0).astype(int)
+    sku_promoter_summary["restan"] = (sku_promoter_summary["cartera"] - sku_promoter_summary["acumulado"]).clip(lower=0)
+    sku_promoter_summary = sku_promoter_summary.sort_values("promotor").rename(
+        columns={
+            "promotor": "Promotor",
+            "cartera": "Cartera",
+            "acumulado": "Acumulado",
+            "hoy": "Hoy",
+            "restan": "Restan",
+        }
+    )
+    st.dataframe(sku_promoter_summary, use_container_width=True, hide_index=True)
+
     st.subheader("Clientes activados último día")
     if sku_last_activation_date is None:
         st.caption("No hay ventas para los filtros seleccionados.")
