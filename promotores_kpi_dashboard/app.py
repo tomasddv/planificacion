@@ -204,6 +204,11 @@ def is_drive_url(value: str):
     return value.startswith("http://") or value.startswith("https://")
 
 
+def google_drive_folder_id(value: str):
+    match = re.search(r"/folders/([a-zA-Z0-9_-]+)", str(value or ""))
+    return match.group(1) if match else ""
+
+
 def normalized_drive_name(name: str):
     normalized = str(name or "").upper().replace("_", " ").replace("-", " ")
     return " ".join(normalized.split())
@@ -253,7 +258,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
         )
 
     try:
-        if drive_url.strip().rstrip("/") == DEFAULT_DRIVE_URL.rstrip("/"):
+        if google_drive_folder_id(drive_url) == google_drive_folder_id(DEFAULT_DRIVE_URL):
             def download_default_file(item):
                 local_name, file_id = item
                 gdown.download(id=file_id, output=str(tmp / local_name), quiet=True, use_cookies=False)
