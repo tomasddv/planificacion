@@ -139,6 +139,7 @@ def inject_style() -> None:
         .warn { background: #fef3c7; color: #b54708 !important; }
         .ok { background: #dcfce7; color: #027a48 !important; }
         .mobile-lots { display: none; }
+        .sku-mobile { display: none; }
         .lot-card {
             background: #fff;
             border: 1px solid rgba(16,24,40,.14);
@@ -212,6 +213,53 @@ def inject_style() -> None:
             .kpi-sub { font-size: .75rem; }
             .desktop-table { display: none; }
             .mobile-lots { display: block; }
+            .sku-mobile { display: block; }
+            .sku-card {
+                background: #fff;
+                border: 1px solid rgba(16,24,40,.14);
+                border-left: 6px solid var(--blue);
+                border-radius: 8px;
+                padding: .85rem;
+                margin-bottom: .7rem;
+                box-shadow: 0 10px 26px rgba(16,24,40,.10);
+            }
+            .sku-card-title {
+                color: var(--ink);
+                font-weight: 950;
+                font-size: .98rem;
+                line-height: 1.2;
+            }
+            .sku-card-code {
+                color: var(--muted);
+                font-weight: 850;
+                font-size: .76rem;
+                margin-bottom: .25rem;
+            }
+            .sku-card-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: .5rem;
+                margin-top: .75rem;
+            }
+            .sku-card-grid div {
+                background: #f8fafc;
+                border: 1px solid rgba(16,24,40,.08);
+                border-radius: 8px;
+                padding: .5rem;
+            }
+            .sku-card-grid span {
+                display: block;
+                color: var(--muted);
+                font-size: .68rem;
+                font-weight: 850;
+                text-transform: uppercase;
+            }
+            .sku-card-grid strong {
+                display: block;
+                color: var(--ink);
+                font-size: .95rem;
+                margin-top: .15rem;
+            }
         }
         </style>
         """,
@@ -534,6 +582,85 @@ def render_lot_table(lots: pd.DataFrame) -> None:
     st.markdown(html_body, unsafe_allow_html=True)
 
 
+def build_sku_accumulated(lots: pd.DataFrame) -> pd.DataFrame:
+    if lots.empty:
+        return pd.DataFrame()
+    base = lots.copy()
+    base["stock_lote"] = pd.to_numeric(base["stock_lote"], errors="coerce").fillna(0)
+    grouped = (
+        base.groupby(["codigo", "descripcion", "ciudad"], as_index=False)
+        .agg(
+            stock=("stock_lote", "sum"),
+            lotes=("lote_nro", "nunique"),
+            proximo_vencimiento=("fecha_vencimiento", "min"),
+        )
+    )
+    city_stock = grouped.pivot_table(
+        index=["codigo", "descripcion"],
+        columns="ciudad",
+        values="stock",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    city_lots = grouped.pivot_table(
+        index=["codigo", "descripcion"],
+        columns="ciudad",
+        values="lotes",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    next_expiry = grouped.groupby(["codigo", "descripcion"], as_index=False)["proximo_vencimiento"].min()
+    table = city_stock.reset_index().merge(next_expiry, on=["codigo", "descripcion"], how="left")
+    stock_cities = [col for col in table.columns if col not in {"codigo", "descripcion", "proximo_vencimiento"}]
+    table["Stock total"] = table[stock_cities].sum(axis=1) if stock_cities else 0
+
+    lot_counts = city_lots.sum(axis=1).reset_index(name="Lotes")
+    table = table.merge(lot_counts, on=["codigo", "descripcion"], how="left")
+    table = table.sort_values(["Stock total", "codigo"], ascending=[False, True])
+    table = table.rename(columns={"codigo": "Codigo", "descripcion": "Producto", "proximo_vencimiento": "Proximo vencimiento"})
+    ordered = ["Codigo", "Producto"] + stock_cities + ["Stock total", "Lotes", "Proximo vencimiento"]
+    return table[ordered]
+
+
+def render_sku_accumulated_table(lots: pd.DataFrame) -> pd.DataFrame:
+    table = build_sku_accumulated(lots)
+    if table.empty:
+        st.info("No hay SKU acumulados para los filtros seleccionados.")
+        return table
+
+    mobile_rows = []
+    city_cols = [col for col in table.columns if col not in {"Codigo", "Producto", "Stock total", "Lotes", "Proximo vencimiento"}]
+    for _, row in table.head(80).iterrows():
+        city_html = "".join(
+            f"<div><span>{escape_html(city)}</span><strong>{format_num(row[city])}</strong></div>"
+            for city in city_cols
+        )
+        mobile_rows.append(
+            "<div class='sku-card'>"
+            f"<div class='sku-card-code'>Cod {escape_html(row['Codigo'])}</div>"
+            f"<div class='sku-card-title'>{escape_html(row['Producto'])}</div>"
+            "<div class='sku-card-grid'>"
+            f"<div><span>Total</span><strong>{format_num(row['Stock total'])}</strong></div>"
+            f"<div><span>Lotes</span><strong>{format_num(row['Lotes'])}</strong></div>"
+            f"<div><span>Prox. venc.</span><strong>{format_date(row['Proximo vencimiento'])}</strong></div>"
+            f"{city_html}"
+            "</div>"
+            "</div>"
+        )
+    st.markdown("<div class='sku-mobile'>" + "".join(mobile_rows) + "</div>", unsafe_allow_html=True)
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Stock total": st.column_config.NumberColumn("Stock total", format="%.1f"),
+            "Lotes": st.column_config.NumberColumn("Lotes", format="%d"),
+            "Proximo vencimiento": st.column_config.DateColumn("Proximo vencimiento", format="DD/MM/YYYY"),
+        },
+    )
+    return table
+
+
 def export_excel(products: pd.DataFrame, lots: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     product_export = products.rename(
@@ -565,9 +692,12 @@ def export_excel(products: pd.DataFrame, lots: pd.DataFrame) -> bytes:
             "archivo": "Archivo",
         }
     )
+    sku_export = build_sku_accumulated(lots)
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         product_export.to_excel(writer, sheet_name="Productos", index=False)
         lot_export.to_excel(writer, sheet_name="Lotes", index=False)
+        if not sku_export.empty:
+            sku_export.to_excel(writer, sheet_name="Acumulado SKU", index=False)
         for sheet in writer.book.worksheets:
             sheet.freeze_panes = "A2"
             for cell in sheet[1]:
@@ -625,8 +755,13 @@ def main() -> None:
     product_view, lot_view = apply_filters(products, lots)
     render_kpis(product_view, lot_view)
 
-    st.subheader("Lotes por vencimiento")
-    render_lot_table(lot_view)
+    lot_tab, sku_tab = st.tabs(["Lotes por vencimiento", "Acumulado SKU"])
+    with lot_tab:
+        st.subheader("Lotes por vencimiento")
+        render_lot_table(lot_view)
+    with sku_tab:
+        st.subheader("Acumulado SKU por base")
+        render_sku_accumulated_table(lot_view)
 
     st.download_button(
         "Exportar Excel",
