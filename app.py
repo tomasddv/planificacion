@@ -53,6 +53,7 @@ EXACT_MONTH_LOOKBACKS = (1, 2, 3)
 NORMALIZATION_VERSION = 4
 CUSTOMER_CHANNEL_VERSION = 2
 SEGMENT_VERSION = 1
+COMBO_HL_FILE_NAME = "combo_hectolitros.csv"
 CANAL_ORDER = ["K+T", "AUTOSERVICIO", "MAYORISTA", "REF", "NO"]
 DIVISION_REPORT_ORDER = [
     "TOTAL CVZA",
@@ -792,6 +793,69 @@ def read_tabular(source: str | Path | io.BytesIO) -> pd.DataFrame:
     raise RuntimeError(f"No pude detectar la codificacion del archivo: {last_error}")
 
 
+@st.cache_data(show_spinner=False)
+def load_combo_hl_table(combo_path_text: str, modified_ns: int) -> pd.DataFrame:
+    path = Path(combo_path_text)
+    if not path.exists():
+        return pd.DataFrame(columns=["codigo", "combo_key", "unidad_negocio", "hl_por_combo"])
+    combos = pd.read_csv(path, dtype="string").fillna("")
+    combos.columns = make_unique_columns(list(combos.columns))
+    if "codigo" not in combos.columns or "hl_por_combo" not in combos.columns:
+        return pd.DataFrame(columns=["codigo", "combo_key", "unidad_negocio", "hl_por_combo"])
+    combos["codigo"] = combos["codigo"].astype(str).str.extract(r"(\d+)", expand=False).fillna("")
+    combos["combo_key"] = combos.get("combo", "").astype(str).map(clean_name)
+    combos["unidad_negocio"] = combos.get("unidad_negocio", "").astype(str).str.strip().str.upper()
+    combos["hl_por_combo"] = pd.to_numeric(combos["hl_por_combo"].astype(str).str.replace(",", ".", regex=False), errors="coerce").fillna(0.0)
+    return combos[["codigo", "combo_key", "unidad_negocio", "hl_por_combo"]]
+
+
+def load_combo_hl_table_from_project() -> pd.DataFrame:
+    path = PROJECT_ROOT / COMBO_HL_FILE_NAME
+    modified_ns = path.stat().st_mtime_ns if path.exists() else 0
+    return load_combo_hl_table(str(path), modified_ns)
+
+
+def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
+    combos = load_combo_hl_table_from_project()
+    required = {"articulo_codigo", "articulo_descripcion", "precio_neto", "importe_neto", "hl"}
+    if sales.empty or combos.empty or not required.issubset(sales.columns):
+        return sales
+
+    result = sales.copy()
+    result["articulo_codigo"] = result["articulo_codigo"].fillna("").astype(str).str.extract(r"(\d+)", expand=False).fillna("")
+    result["articulo_key"] = result["articulo_descripcion"].fillna("").astype(str).map(clean_name)
+    combo_by_code = combos.drop_duplicates("codigo").set_index("codigo")
+    combo_by_key = combos[combos["combo_key"].ne("")].drop_duplicates("combo_key").set_index("combo_key")
+
+    code_hl = result["articulo_codigo"].map(combo_by_code["hl_por_combo"])
+    key_hl = result["articulo_key"].map(combo_by_key["hl_por_combo"])
+    combo_hl = code_hl.fillna(key_hl).fillna(0.0)
+
+    code_unit = result["articulo_codigo"].map(combo_by_code["unidad_negocio"])
+    key_unit = result["articulo_key"].map(combo_by_key["unidad_negocio"])
+    combo_unit = code_unit.fillna(key_unit).fillna("")
+
+    combo_mask = result["articulo_descripcion"].fillna("").astype(str).str.contains("COMBO", case=False, na=False)
+    missing_hl = result["hl"].fillna(0).eq(0)
+    can_correct = combo_mask & missing_hl & combo_hl.gt(0)
+
+    combo_count = np.where(
+        result["precio_neto"].fillna(0).gt(0) & result["importe_neto"].fillna(0).gt(0),
+        result["importe_neto"].fillna(0) / result["precio_neto"].fillna(0),
+        1.0,
+    )
+    combo_count = pd.Series(combo_count, index=result.index).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    rounded_count = combo_count.round()
+    combo_count = np.where((combo_count - rounded_count).abs() <= 0.05, rounded_count, combo_count)
+    result.loc[can_correct, "hl"] = combo_hl.loc[can_correct] * pd.Series(combo_count, index=result.index).loc[can_correct]
+
+    empty_business = result["unidad_negocio"].fillna("").astype(str).str.strip().isin(["", "Otro", "Sin negocio"])
+    has_unit = combo_unit.astype(str).str.strip().ne("")
+    result.loc[can_correct & empty_business & has_unit, "unidad_negocio"] = combo_unit.loc[can_correct & empty_business & has_unit]
+    result = result.drop(columns=["articulo_key"], errors="ignore")
+    return result
+
+
 def classify_customer_channel(value: str | None) -> str:
     text = strip_accents("" if value is None else str(value)).upper()
     if "AUTOSERV" in text:
@@ -1472,6 +1536,8 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
             "ruta": first_present(df, ["descripcion_1"], "J"),
             "vendedor_codigo": first_present(df, ["vendedor"], "O"),
             "vendedor": first_present(df, ["descripcion_vendedor"], "P"),
+            "articulo_codigo": col_by_position(df, "R"),
+            "articulo_descripcion": col_by_position(df, "S"),
             "marca": first_present(df, ["descripcion_3"], "U"),
             "calibre": col_by_position(df, "X"),
             "division_codigo": first_present(df, ["division"], "Z"),
@@ -1480,7 +1546,9 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
             "canal": first_present(df, ["descripcion_ramo"], "N"),
             "negocio_codigo": first_present(df, ["unidad_de_negocio"], "AI"),
             "negocio": first_present(df, ["descripcion_8"], "AJ"),
+            "precio_neto": parse_argentine_number(col_by_position(df, "AN")),
             "hl": parse_argentine_number(col_by_position(df, "AO")),
+            "importe_neto": parse_argentine_number(col_by_position(df, "AQ")),
         }
     )
 
@@ -1496,6 +1564,8 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
     normalized["division"] = normalized["division"].fillna("Sin division").astype(str).str.strip()
     normalized["canal"] = normalized["canal"].fillna("Sin canal").astype(str).str.strip()
     normalized["negocio"] = normalized["negocio"].fillna("Sin negocio").astype(str).str.strip()
+    normalized["articulo_codigo"] = normalized["articulo_codigo"].fillna("").astype(str).str.strip()
+    normalized["articulo_descripcion"] = normalized["articulo_descripcion"].fillna("").astype(str).str.strip()
     normalized["mesa"] = mesa_from_promoter(normalized["promotor"])
     normalized["supervisor"] = normalized["mesa"]
     normalized["unidad_negocio"] = np.select(
@@ -1509,6 +1579,7 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
 
     normalized = normalized.dropna(subset=["fecha"])
     normalized["hl"] = normalized["hl"].fillna(0.0)
+    normalized = apply_combo_hl_corrections(normalized)
     normalized["dia_semana"] = normalized["fecha"].dt.day_name(locale=None)
     normalized["es_habil"] = normalized["fecha"].dt.weekday <= 5
     normalized = normalized[normalized["es_habil"]].copy()
