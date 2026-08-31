@@ -135,6 +135,47 @@ def inject_style() -> None:
         .fresh-table td:nth-child(2),
         .fresh-table td:nth-child(3),
         .fresh-table td:nth-child(12) { text-align: left; }
+        table.sku-table {
+            min-width: 860px;
+            font-family: Arial, sans-serif;
+            font-size: .9rem;
+        }
+        table.sku-table th {
+            background: #28549a;
+            color: #ffffff !important;
+            border: 1px solid #111827;
+            padding: .48rem .55rem;
+            text-align: center;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        table.sku-table td {
+            background: #ffffff;
+            color: #111827 !important;
+            border: 1px solid #111827;
+            padding: .45rem .55rem;
+            text-align: right;
+            font-weight: 800;
+        }
+        table.sku-table td:nth-child(1) {
+            background: #2f5ea8;
+            color: #ffffff !important;
+            text-align: center;
+            font-weight: 950;
+            white-space: nowrap;
+        }
+        table.sku-table td:nth-child(2) {
+            text-align: left;
+            font-weight: 900;
+        }
+        table.sku-table tr.total-row td {
+            background: #f8fafc;
+            font-weight: 950;
+        }
+        table.sku-table tr.total-row td:first-child {
+            background: #214986;
+            color: #ffffff !important;
+        }
         .bad { background: #ffe4e8; color: #b42318 !important; }
         .warn { background: #fef3c7; color: #b54708 !important; }
         .ok { background: #dcfce7; color: #027a48 !important; }
@@ -648,16 +689,35 @@ def render_sku_accumulated_table(lots: pd.DataFrame) -> pd.DataFrame:
             "</div>"
         )
     st.markdown("<div class='sku-mobile'>" + "".join(mobile_rows) + "</div>", unsafe_allow_html=True)
-    st.dataframe(
-        table,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Stock total": st.column_config.NumberColumn("Stock total", format="%.1f"),
-            "Lotes": st.column_config.NumberColumn("Lotes", format="%d"),
-            "Proximo vencimiento": st.column_config.DateColumn("Proximo vencimiento", format="DD/MM/YYYY"),
-        },
+    headers = "".join(f"<th>{escape_html(column)}</th>" for column in table.columns)
+    rows = []
+    for _, row in table.iterrows():
+        cells = []
+        for column in table.columns:
+            value = row[column]
+            if column == "Proximo vencimiento":
+                display = format_date(value)
+            elif column in {"Codigo", "Producto"}:
+                display = escape_html(value)
+            else:
+                display = format_num(value)
+            cells.append(f"<td>{display}</td>")
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    total_cells = ["<td>TOTAL</td>", "<td></td>"]
+    for column in city_cols:
+        total_cells.append(f"<td>{format_num(table[column].sum())}</td>")
+    total_cells.append(f"<td>{format_num(table['Stock total'].sum())}</td>")
+    total_cells.append(f"<td>{format_num(table['Lotes'].sum())}</td>")
+    total_cells.append("<td></td>")
+    rows.append("<tr class='total-row'>" + "".join(total_cells) + "</tr>")
+    table_html = (
+        "<div class='table-wrap desktop-table'>"
+        "<table class='fresh-table sku-table'>"
+        f"<thead><tr>{headers}</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table></div>"
     )
+    st.markdown(table_html, unsafe_allow_html=True)
     return table
 
 
