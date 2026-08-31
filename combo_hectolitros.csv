@@ -1,6 +1,6 @@
 ﻿codigo,combo,unidad_negocio,hl_por_combo,nota
 900098,COMBO GIN CORTÁ LA SED,UNG,0.11,Validado ERP 2026-08-31: 2 articulos
-900226,COMBO ECO 500 + ECO 1.5L,UNG,0.15,Validado ERP 2026-08-31: 2 articulos
+900226,COMBO ECO 500 + ECO 1.5L,AGUAS ECO,0.15,Validado ERP 2026-08-31: 2 articulos
 900299,*COMBO LATONES - BAJO DROP FEB*,CZA,0.142,5 fourpacks 1x4 710cc
 900311,*COMBO LATONES - FEB OP3*,CZA,0.568,Validado ERP 2026-08-31: 5 articulos
 900329,COMBO CERVEZA: SIXPACK LATA QC + SIXPACK LATA BR,CZA,0.05676,Validado ERP 2026-08-31: 2 articulos
@@ -23,11 +23,11 @@
 900409,COMBO 7UP - PAT,UNG,0.25,Validado ERP 2026-08-31: 2 articulos
 900410,COMBO 1500CC - PAT,UNG,0.27,3 packs 1x6 1500cc
 900411,COMBO ENERGÍA - PAT,UNG,0.085,Validado ERP 2026-08-31: 2 articulos
-900421,"Combo Bidon Nestle 16% + Eco 1,5 + Eco 2 Lt 20% OFF",UNG,1.608,Validado ERP 2026-08-31: 3 articulos
+900421,"Combo Bidon Nestle 16% + Eco 1,5 + Eco 2 Lt 20% OFF",AGUAS ECO,1.608,Validado ERP 2026-08-31: 3 articulos
 900423,COMBO RED BULL CON UN 20% OFF,UNG,0.0642,5 packs 1x4 250cc + 1 pack 1x4 355cc
 900424,Combo Redbull a 10% OFF,UNG,0.03,Validado ERP 2026-08-31: 3 articulos
-900425,Combo ECO 500 con & sin gas con un 26% OFF,UNG,0.12,Validado ERP 2026-08-31: 2 articulos
-900427,"Combo ECO 1,5L + BIDON Glaciar 6.4. 16% OFF",UNG,0.090128,Validado ERP 2026-08-31: 2 articulos
+900425,Combo ECO 500 con & sin gas con un 26% OFF,AGUAS ECO,0.12,Validado ERP 2026-08-31: 2 articulos
+900427,"Combo ECO 1,5L + BIDON Glaciar 6.4. 16% OFF",AGUAS ECO,0.090128,Validado ERP 2026-08-31: 2 articulos
 900428,COMBO LATONES - BRAHMA Y QUILMES - PATAGONIA,CZA,0.1136,Validado ERP 2026-08-31: 4 articulos
 900429,COMBO STELLA PORRON 330 LAGER + PURE GOLD,CZA,0.0396,Validado ERP 2026-08-31: 2 articulos
 900430,PROMO STELLA LATA 10% LAGER + PURE GOLD PATAGONIA,CZA,0.05676,Validado ERP 2026-08-31: 2 articulos
