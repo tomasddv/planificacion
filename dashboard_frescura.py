@@ -672,7 +672,7 @@ def build_sku_accumulated(lots: pd.DataFrame) -> pd.DataFrame:
 
     lot_counts = city_lots.sum(axis=1).reset_index(name="Lotes")
     table = table.merge(lot_counts, on=["codigo", "descripcion"], how="left")
-    table = table.sort_values(["Stock total", "codigo"], ascending=[False, True])
+    table = table.sort_values(["proximo_vencimiento", "codigo"], ascending=[True, True])
     table = table.rename(columns={"codigo": "Codigo", "descripcion": "Producto", "proximo_vencimiento": "Proximo vencimiento"})
     ordered = ["Codigo", "Producto"] + stock_cities + ["Stock total", "Lotes", "Proximo vencimiento"]
     return table[ordered]
