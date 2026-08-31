@@ -511,12 +511,23 @@ def apply_filters(products: pd.DataFrame, lots: pd.DataFrame) -> tuple[pd.DataFr
     st.sidebar.markdown("### Filtros")
     cities = sorted(products["ciudad"].dropna().unique().tolist()) if not products.empty else []
     selected_cities = st.sidebar.multiselect("Ciudad", cities, default=cities)
+    expiry_months = []
+    if not lots.empty and "fecha_vencimiento" in lots.columns:
+        expiry_periods = lots["fecha_vencimiento"].dropna().dt.to_period("M").drop_duplicates().sort_values()
+        expiry_months = [period.strftime("%m/%Y") for period in expiry_periods]
+    selected_expiry_months = st.sidebar.multiselect("Mes vencimiento", expiry_months, default=expiry_months)
     search = st.sidebar.text_input("Buscar codigo o producto", value="", placeholder="Ej: 2218 o Quilmes")
     status_options = ["Todos", "ACCIONAR", "OK", "ELIMINAR/BLOQUEADO"]
     selected_status = st.sidebar.selectbox("Estado lote", status_options)
 
     product_view = products[products["ciudad"].isin(selected_cities)].copy()
     lot_view = lots[lots["ciudad"].isin(selected_cities)].copy()
+    if expiry_months and selected_expiry_months:
+        selected_periods = set(selected_expiry_months)
+        lot_months = lot_view["fecha_vencimiento"].dt.to_period("M").map(lambda period: period.strftime("%m/%Y") if pd.notna(period) else "")
+        lot_view = lot_view[lot_months.isin(selected_periods)].copy()
+    elif expiry_months:
+        lot_view = lot_view.iloc[0:0].copy()
     if search.strip():
         terms = [clean_name(term) for term in search.replace(";", " ").replace(",", " ").split() if term.strip()]
         if terms:
@@ -533,6 +544,10 @@ def apply_filters(products: pd.DataFrame, lots: pd.DataFrame) -> tuple[pd.DataFr
     elif selected_status == "ELIMINAR/BLOQUEADO":
         state = lot_view["estado"].map(clean_name)
         lot_view = lot_view[state.str.contains("eliminar|bloqueado", na=False) | lot_view["dias_bloqueo"].fillna(99999).le(0)]
+    if expiry_months:
+        visible_keys = set(zip(lot_view["ciudad"].astype(str), lot_view["codigo"].astype(str)))
+        product_keys = pd.Series(zip(product_view["ciudad"].astype(str), product_view["codigo"].astype(str)), index=product_view.index)
+        product_view = product_view[product_keys.isin(visible_keys)].copy()
     return product_view, lot_view
 
 
