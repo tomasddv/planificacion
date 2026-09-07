@@ -51,6 +51,48 @@ DATA_DIR_CANDIDATES = [
 ]
 VALID_EXTENSIONS = {".txt", ".csv"}
 CLIENT_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
+MONTH_NAMES = {
+    1: "Enero",
+    2: "Febrero",
+    3: "Marzo",
+    4: "Abril",
+    5: "Mayo",
+    6: "Junio",
+    7: "Julio",
+    8: "Agosto",
+    9: "Septiembre",
+    10: "Octubre",
+    11: "Noviembre",
+    12: "Diciembre",
+}
+MONTH_NUMBER_BY_NAME = {
+    "enero": 1,
+    "ene": 1,
+    "febrero": 2,
+    "feb": 2,
+    "marzo": 3,
+    "mar": 3,
+    "abril": 4,
+    "abr": 4,
+    "mayo": 5,
+    "may": 5,
+    "junio": 6,
+    "jun": 6,
+    "julio": 7,
+    "jul": 7,
+    "agosto": 8,
+    "ago": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "sep": 9,
+    "set": 9,
+    "octubre": 10,
+    "oct": 10,
+    "noviembre": 11,
+    "nov": 11,
+    "diciembre": 12,
+    "dic": 12,
+}
 PLANNER_STORE_FILE_NAME = "planificador_diario_guardado.csv"
 PLANNER_DATA_DIR = Path(os.environ.get("PLANNER_DATA_DIR", PROJECT_ROOT / ".planner_data"))
 PLANNER_SHEET_NAME = "planificador_diario"
@@ -634,7 +676,22 @@ def latest_matching_file(folder: Path, include_terms: tuple[str, ...], exclude_t
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
+def exact_daily_files_in_folder(folder: Path) -> list[Path]:
+    if not folder.exists():
+        return []
+    return [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in VALID_EXTENSIONS
+        and clean_name(path.stem).replace("_", "") == "ventadiaria"
+    ]
+
+
 def latest_daily_file_in_folder(folder: Path) -> Path | None:
+    exact_daily = exact_daily_files_in_folder(folder)
+    if exact_daily:
+        return max(exact_daily, key=lambda path: path.stat().st_mtime)
     daily = latest_matching_file(folder, ("diaria",), ("anual", "bulto", "bultos"))
     if daily is not None:
         return daily
@@ -654,25 +711,41 @@ def latest_daily_file_in_folder(folder: Path) -> Path | None:
     return latest_matching_file(folder, tuple(), ("anual", "bulto", "bultos"))
 
 
+def month_period_from_filename(path: Path) -> pd.Period | None:
+    stem = clean_name(path.stem)
+    tokens = set(stem.split("_"))
+    month_number = next((number for name, number in MONTH_NUMBER_BY_NAME.items() if name in tokens), None)
+    if month_number is None:
+        return None
+    year_match = re.search(r"(20\d{2})", stem)
+    year = int(year_match.group(1)) if year_match else pd.Timestamp.today().year
+    return pd.Period(year=year, month=month_number, freq="M")
+
+
+def closed_sales_files_in_folder(folder: Path, current_file: Path | None = None) -> list[Path]:
+    files_by_period: dict[pd.Period, Path] = {}
+    for path in historical_sales_files_in_folder(folder, current_file=current_file):
+        period = month_period_from_filename(path)
+        if period is None:
+            continue
+        current = files_by_period.get(period)
+        if current is None or path.stat().st_mtime > current.stat().st_mtime:
+            files_by_period[period] = path
+    return [files_by_period[period] for period in sorted(files_by_period, reverse=True)]
+
+
+def closed_period_label(path: Path) -> str:
+    period = month_period_from_filename(path)
+    if period is None:
+        return f"Cierre {path.stem}"
+    return f"Cierre {MONTH_NAMES[period.month]} {period.year}"
+
+
 def historical_sales_files_in_folder(folder: Path, current_file: Path | None = None) -> list[Path]:
     if not folder.exists():
         return []
     excluded = {"anual", "bulto", "bultos", "objet", "cliente", "clientes", "auxiliar"}
-    month_terms = {
-        "enero",
-        "febrero",
-        "marzo",
-        "abril",
-        "mayo",
-        "junio",
-        "julio",
-        "agosto",
-        "septiembre",
-        "setiembre",
-        "octubre",
-        "noviembre",
-        "diciembre",
-    }
+    month_terms = set(MONTH_NUMBER_BY_NAME)
     current_resolved = current_file.resolve() if current_file is not None and current_file.exists() else None
     files: list[Path] = []
     for path in folder.iterdir():
@@ -3102,6 +3175,14 @@ def main() -> None:
     data_dir = current_data_dir(force_refresh=bool(st.session_state.get("force_data_refresh", False)))
     st.session_state["force_data_refresh"] = False
     st.sidebar.caption(f"Carpeta automatica: {data_dir}")
+    actual_sales_file = latest_daily_file_in_folder(data_dir)
+    closed_sales_files = closed_sales_files_in_folder(data_dir, actual_sales_file)
+    closed_period_options = {closed_period_label(path): path for path in closed_sales_files}
+    period_choice = st.sidebar.selectbox(
+        "Periodo de venta",
+        ["Actual"] + list(closed_period_options.keys()),
+        help="Actual usa ventadiaria.txt. Los cierres usan archivos mensuales como ventadiaria agosto o venta julio.",
+    )
     load_annual_comparison = st.sidebar.checkbox(
         "Cargar comparacion AA",
         value=True,
@@ -3115,7 +3196,7 @@ def main() -> None:
         if uploaded is not None:
             df, info = load_source_from_upload(uploaded.name, uploaded.getvalue())
         else:
-            latest = latest_daily_file_in_folder(data_dir)
+            latest = closed_period_options.get(period_choice) if period_choice != "Actual" else actual_sales_file
             if latest is None:
                 st.warning("No encontre archivos TXT/CSV en la carpeta automatica. Use la carga manual.")
                 st.stop()
