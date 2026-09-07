@@ -225,6 +225,28 @@ def is_closed_month_sales_file(name: str):
     )
 
 
+def has_required_dashboard_files(base: Path):
+    files = [path for path in base.rglob("*") if path.is_file()]
+
+    def has_file(required_terms: tuple[str, ...], suffixes: tuple[str, ...], excluded_terms: tuple[str, ...] = ()):
+        for path in files:
+            name = normalized_drive_name(path.name)
+            compact = name.replace(" ", "")
+            if path.suffix.upper() not in {suffix.upper() for suffix in suffixes}:
+                continue
+            if any(term in name or term in compact for term in excluded_terms):
+                continue
+            if all(term in name or term in compact for term in required_terms):
+                return True
+        return False
+
+    return (
+        has_file(("RUTAS",), (".xlsx", ".xls"))
+        and has_file(("AUXILIARES",), (".xlsx", ".xls"))
+        and has_file(("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL", "BULTOS"))
+    )
+
+
 def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: bool = False):
     drive_url = drive_url or secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
     if not drive_url:
@@ -257,17 +279,38 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
             or "PLANTILLACLIENTESAR" in compact
         )
 
+    download_notes = []
+
+    def download_file_id(file_id: str, output: Path, label: str):
+        try:
+            gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
+            if output.exists() and output.stat().st_size > 0:
+                return f"{label}: actualizado"
+            return f"{label}: sin descarga"
+        except Exception as exc:
+            download_notes.append(f"{label}: {exc}")
+            return f"{label}: error"
+
+    def download_folder_file(file, output: Path):
+        try:
+            gdown.download(id=file.id, output=str(output), quiet=True, use_cookies=False)
+            if output.exists() and output.stat().st_size > 0:
+                return f"{output.name}: actualizado"
+            return f"{output.name}: sin descarga"
+        except Exception as exc:
+            download_notes.append(f"{output.name}: {exc}")
+            return f"{output.name}: error"
+
     try:
         if google_drive_folder_id(drive_url) == google_drive_folder_id(DEFAULT_DRIVE_URL):
             def download_default_file(item):
                 local_name, file_id = item
-                gdown.download(id=file_id, output=str(tmp / local_name), quiet=True, use_cookies=False)
-                return local_name
+                return download_file_id(file_id, tmp / local_name, local_name)
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = [executor.submit(download_default_file, item) for item in DEFAULT_DRIVE_FILE_IDS.items()]
                 for future in as_completed(futures):
-                    future.result()
+                    download_notes.append(future.result())
             try:
                 drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
                 selected_files = [
@@ -277,30 +320,27 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     futures = [
                         executor.submit(
-                            gdown.download,
-                            id=file.id,
-                            output=str(tmp / Path(str(file.path)).name),
-                            quiet=True,
-                            use_cookies=False,
+                            download_folder_file,
+                            file,
+                            tmp / Path(str(file.path)).name,
                         )
                         for file in selected_files
                     ]
                     for future in as_completed(futures):
-                        future.result()
-            except Exception:
-                pass
+                        download_notes.append(future.result())
+            except Exception as exc:
+                download_notes.append(f"Listado carpeta Drive: {exc}")
         else:
             drive_files = gdown.download_folder(url=drive_url, output=str(tmp), quiet=True, use_cookies=False, skip_download=True)
             selected_files = [file for file in (drive_files or []) if wanted_drive_file(str(file.path))]
             def download_selected_file(file):
                 local_name = Path(str(file.path)).name
-                gdown.download(id=file.id, output=str(tmp / local_name), quiet=True, use_cookies=False)
-                return local_name
+                return download_folder_file(file, tmp / local_name)
 
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = [executor.submit(download_selected_file, file) for file in selected_files]
                 for future in as_completed(futures):
-                    future.result()
+                    download_notes.append(future.result())
     except Exception as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         return (target if target.exists() else None), f"No se pudo actualizar Drive: {exc}"
@@ -308,6 +348,12 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
     if not any(tmp.rglob("*")):
         shutil.rmtree(tmp, ignore_errors=True)
         return (target if target.exists() else None), "Drive no devolvio archivos utiles"
+
+    if not has_required_dashboard_files(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+        if target.exists() and has_required_dashboard_files(target):
+            return target, "Drive parcial; se conserva cache anterior. " + "; ".join(download_notes[:6])
+        return None, "Drive no devolvio RUTAS, AUXILIARES y VENTA DIARIA completos. " + "; ".join(download_notes[:6])
 
     if target.exists():
         shutil.rmtree(target)
@@ -1521,7 +1567,11 @@ with st.sidebar:
     if is_drive_url(source_input):
         with st.spinner("Leyendo archivos desde Drive..."):
             drive_dir, drive_status = resolve_google_drive_folder(source_input, force_refresh=force_drive_refresh)
-        data_dir = str(drive_dir) if drive_dir else DEFAULT_DATA_DIR
+        if not drive_dir:
+            st.caption(f"Fuente: {drive_status}")
+            st.error("No se pudo leer la carpeta de Drive. Revisá permisos del enlace o que existan RUTAS, AUXILIARES y ventadiaria.")
+            st.stop()
+        data_dir = str(drive_dir)
         if force_drive_refresh:
             with st.spinner("Actualizando cierres mensuales desde Drive..."):
                 _closed_paths, closed_status = resolve_closed_month_sales_files(force_refresh=True)
