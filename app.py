@@ -35,6 +35,13 @@ APP_TITLE = "Venta diaria HL"
 SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 SALES_CURVE_CUTOFF = pd.Timestamp("2026-07-31")
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
+DEFAULT_DRIVE_FILE_IDS = {
+    "ventadiaria.txt": "12c7hy-bTbg7P_1QYUyKKcooNLo4iog1x",
+    "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
+    "venta junio 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
+    "venta JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+}
 DATA_DIR_CANDIDATES = [
     PROJECT_ROOT / "planificacion",
     PROJECT_ROOT / "data",
@@ -146,14 +153,34 @@ def truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "y"}
 
 
+def google_drive_folder_id(value: str) -> str:
+    match = re.search(r"/folders/([a-zA-Z0-9_-]+)", str(value or ""))
+    return match.group(1) if match else ""
+
+
+def normalized_drive_filename(value: str) -> str:
+    return " ".join(str(value or "").upper().replace("_", " ").replace("-", " ").split())
+
+
+def has_sales_files(path: Path) -> bool:
+    return path.exists() and any(
+        item.is_file()
+        and item.suffix.lower() in VALID_EXTENSIONS
+        and "venta" in clean_name(item.stem)
+        and "anual" not in clean_name(item.stem)
+        and "bulto" not in clean_name(item.stem)
+        for item in path.iterdir()
+    )
+
+
 def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refresh: bool = False) -> Path | None:
-    url = secret_or_env(secret_name)
+    url = secret_or_env(secret_name, DEFAULT_DRIVE_URL)
     if not url:
         return None
 
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
-    has_files = target.exists() and any(target.iterdir())
+    has_files = has_sales_files(target)
     if has_files and not refresh:
         return target
 
@@ -168,12 +195,52 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
         shutil.rmtree(tmp_target, ignore_errors=True)
     tmp_target.mkdir(parents=True, exist_ok=True)
 
-    try:
-        gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False)
-    except Exception:
-        return target if target.exists() and any(target.iterdir()) else None
+    download_notes: list[str] = []
 
-    if tmp_target.exists() and any(tmp_target.iterdir()):
+    def wanted_drive_file(name: str) -> bool:
+        normalized = normalized_drive_filename(Path(str(name)).name)
+        compact = normalized.replace(" ", "")
+        return (
+            ("VENTA" in normalized and "BULTOS" not in normalized)
+            or ("VENTADIARIA" in compact)
+            or ("BULTOS" in normalized)
+            or ("OBJETIVOS" in normalized)
+            or ("PLANIFICACION" in normalized)
+            or ("CLIENTES" in normalized)
+            or ("AUXILIARES" in normalized)
+            or ("RUTAS" in normalized)
+            or ("FRESCURA" in normalized)
+            or ("SEMAFORO" in normalized)
+            or ("SEMÁFORO" in normalized)
+        )
+
+    def download_by_id(file_id: str, output: Path, label: str) -> None:
+        try:
+            gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
+            if output.exists() and output.stat().st_size > 0:
+                download_notes.append(f"{label}: actualizado")
+            else:
+                download_notes.append(f"{label}: sin descarga")
+        except Exception as exc:
+            download_notes.append(f"{label}: {exc}")
+
+    try:
+        if google_drive_folder_id(url) == google_drive_folder_id(DEFAULT_DRIVE_URL):
+            for local_name, file_id in DEFAULT_DRIVE_FILE_IDS.items():
+                download_by_id(file_id, tmp_target / local_name, local_name)
+        try:
+            drive_files = gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False, skip_download=True)
+            for file in drive_files or []:
+                local_name = Path(str(file.path)).name
+                if not wanted_drive_file(local_name):
+                    continue
+                download_by_id(file.id, tmp_target / local_name, local_name)
+        except Exception as exc:
+            download_notes.append(f"carpeta Drive: {exc}")
+    except Exception as exc:
+        download_notes.append(f"Drive: {exc}")
+
+    if tmp_target.exists() and has_sales_files(tmp_target):
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         try:
@@ -181,7 +248,8 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
             return target
         except Exception:
             return tmp_target
-    return target if target.exists() and any(target.iterdir()) else None
+    shutil.rmtree(tmp_target, ignore_errors=True)
+    return target if has_sales_files(target) else None
 
 
 DEFAULT_DATA_DIR = next((path for path in DATA_DIR_CANDIDATES if path.exists()), DATA_DIR_CANDIDATES[0])
@@ -567,6 +635,19 @@ def latest_matching_file(folder: Path, include_terms: tuple[str, ...], exclude_t
 
 
 def latest_daily_file_in_folder(folder: Path) -> Path | None:
+    daily = latest_matching_file(folder, ("diaria",), ("anual", "bulto", "bultos"))
+    if daily is not None:
+        return daily
+    compact_daily = [
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in VALID_EXTENSIONS
+        and "ventadiaria" in clean_name(path.stem).replace("_", "")
+        and "bulto" not in clean_name(path.stem)
+    ] if folder.exists() else []
+    if compact_daily:
+        return max(compact_daily, key=lambda path: path.stat().st_mtime)
     preferred = latest_matching_file(folder, ("venta",), ("anual", "bulto", "bultos"))
     if preferred is not None:
         return preferred
