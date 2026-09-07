@@ -112,6 +112,7 @@ DIVISION_REPORT_ORDER = [
     "CVZA VALUE",
     "CVZA CORE +",
     "CVZA HE",
+    "CVZA SIN SEGMENTO",
     "UNG SIN TOP",
     "UNG TOP",
     "AGUAS ECO",
@@ -119,6 +120,8 @@ DIVISION_REPORT_ORDER = [
     "ADYACENCIAS",
 ]
 REPORT_TOTAL_UNITS = {"CZA", "UNG", "AGUAS ECO", "VINO", "ADYACENCIAS"}
+EXCLUDED_CZA_ARTICLE_CODES = {"2776"}
+EXCLUDED_CZA_ARTICLE_TERMS = ("ARACELI",)
 PLANNER_FOCUS_RULES = {
     "Foco 1 - Total Cervezas 2026": {
         "title": "TOTAL CZA",
@@ -1730,6 +1733,11 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
         ["UNG", "CZA"],
         default=normalized["negocio"].fillna("Otro").astype(str).str.strip(),
     )
+    excluded_code = normalized["articulo_codigo"].astype(str).str.extract(r"(\d+)", expand=False).isin(EXCLUDED_CZA_ARTICLE_CODES)
+    excluded_text = normalized["articulo_descripcion"].map(key_text).apply(
+        lambda value: any(term in value for term in EXCLUDED_CZA_ARTICLE_TERMS)
+    )
+    normalized.loc[normalized["unidad_negocio"].eq("CZA") & (excluded_code | excluded_text), "unidad_negocio"] = "Sin negocio"
 
     normalized = normalized.dropna(subset=["fecha"])
     normalized["hl"] = normalized["hl"].fillna(0.0)
