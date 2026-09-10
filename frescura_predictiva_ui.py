@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import time
 import traceback
@@ -15,10 +16,13 @@ from forecast_engine import (
     DAY_COLS,
     DAY_NAMES,
     build_weekday_profiles,
+    build_supermarket_weekday_profiles,
+    combine_normal_and_supermarket_profiles,
     combine_history,
     forecast_summary,
     load_current_bultos,
     load_history_base,
+    load_supermarket_dispatches,
     simulate_fefo,
 )
 
@@ -27,6 +31,11 @@ RUNTIME_DIR = sales_app.PROJECT_ROOT / ".cloud_data" / "frescura_predictiva"
 HISTORY_CANDIDATES = [
     sales_app.PROJECT_ROOT / "historico_frescura_bultos.csv.gz",
     sales_app.PROJECT_ROOT / "historico_frescura_bultos.csv",
+]
+
+SUPERMARKET_HISTORY_CANDIDATES = [
+    sales_app.PROJECT_ROOT / "historico_supermercados_bultos.csv.gz",
+    sales_app.PROJECT_ROOT / "historico_supermercados_bultos.csv",
 ]
 
 
@@ -42,7 +51,9 @@ def _find_item(items, include_words, suffixes=()):
         if all(word in clean for word in include_words):
             if not suffixes or Path(name).suffix.lower() in suffixes:
                 matches.append(item)
-    return matches[-1] if matches else None
+    if not matches:
+        return None
+    return sorted(matches, key=lambda item: Path(str(item.path)).name.lower())[-1]
 
 
 def _drive_items(drive_url: str):
@@ -97,6 +108,11 @@ def _operational_sources(drive_url: str, refresh_slot: int):
         ("ventadiaria", "bultos"),
         suffixes=(".txt",),
     )
+    supermarket_report = _find_item(
+        items,
+        ("reportecomprobantesdetallado",),
+        suffixes=(".xlsx", ".xls"),
+    )
 
     if customer is None:
         raise RuntimeError("No encontré PlantillaClientesAR en Drive.")
@@ -106,7 +122,15 @@ def _operational_sources(drive_url: str, refresh_slot: int):
     customer_path = _download(customer, RUNTIME_DIR)
     current_path = _download(current, RUNTIME_DIR)
 
-    return str(customer_path), str(current_path)
+    supermarket_path = None
+    if supermarket_report is not None:
+        supermarket_path = _download(supermarket_report, RUNTIME_DIR)
+
+    return (
+        str(customer_path),
+        str(current_path),
+        str(supermarket_path) if supermarket_path else None,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -135,6 +159,26 @@ def _history_file() -> Path | None:
     return next((p for p in HISTORY_CANDIDATES if p.exists()), None)
 
 
+def _supermarket_history_file() -> Path | None:
+    return next(
+        (p for p in SUPERMARKET_HISTORY_CANDIDATES if p.exists()),
+        None,
+    )
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _supermarket_current(
+    report_path: str,
+    report_mtime: int,
+    report_size: int,
+    wanted_key: tuple[str, ...],
+):
+    return load_supermarket_dispatches(
+        report_xlsx=report_path,
+        wanted_skus=set(wanted_key),
+    )
+
+
 def _fmt(value: object, decimals: int = 1) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -152,6 +196,135 @@ def _pct(value: object) -> str:
     if not np.isfinite(value):
         return "Sin venta natural"
     return f"{value:.1f}%".replace(".", ",")
+
+
+def _escape(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return html.escape(str(value), quote=True)
+
+
+def _date(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return pd.Timestamp(value).strftime("%d/%m/%Y")
+
+
+def _state_class(state: object) -> str:
+    value = str(state or "").upper()
+    if value == "CRITICO":
+        return "bad"
+    if value == "ACCIONAR":
+        return "warn"
+    return "ok"
+
+
+
+def _render_source_breakdown(row: pd.Series) -> None:
+    headers = "".join(f"<th>{_escape(day)}</th>" for day in DAY_NAMES)
+    rows = []
+
+    sources = [
+        ("Venta normal", [row.get(f"normal_{c}", 0.0) for c in DAY_COLS]),
+        ("Supermercados", [row.get(f"super_{c}", 0.0) for c in DAY_COLS]),
+        ("Salida total", [row.get(c, 0.0) for c in DAY_COLS]),
+    ]
+
+    for label, values in sources:
+        klass = "total-source" if label == "Salida total" else ""
+        cells = "".join(f"<td>{_fmt(v)}</td>" for v in values)
+        rows.append(
+            f"<tr class='{klass}'><td>{_escape(label)}</td>{cells}</tr>"
+        )
+
+    st.markdown(
+        "<div class='table-wrap desktop-table'>"
+        "<table class='fresh-table source-table'>"
+        "<thead><tr><th>Fuente</th>"
+        + headers
+        + "</tr></thead>"
+        "<tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_predictive_html_table(table: pd.DataFrame) -> None:
+    """Tabla predictiva con la misma estética visual del tablero histórico."""
+    if table.empty:
+        st.info("No hay lotes con esos filtros.")
+        return
+
+    rows = []
+    cards = []
+
+    for _, row in table.iterrows():
+        state = str(row["Estado"] or "-")
+        klass = _state_class(state)
+        card_class = "bad-card" if klass == "bad" else "warn-card" if klass == "warn" else ""
+
+        rows.append(
+            "<tr>"
+            f"<td>{_escape(row['Base'])}</td>"
+            f"<td>{_escape(row['Código'])}</td>"
+            f"<td>{_escape(row['Producto'])}</td>"
+            f"<td>{_escape(row['Lote'])}</td>"
+            f"<td>{_fmt(row['Stock lote'])}</td>"
+            f"<td>{_date(row['Vencimiento'])}</td>"
+            f"<td>{_fmt(row['Venta estimada hasta vto.'])}</td>"
+            f"<td class='{klass}'>{_fmt(row['Bultos en riesgo'])}</td>"
+            f"<td>{_date(row['Agotamiento estimado'])}</td>"
+            f"<td class='{klass}'>{_fmt(row['Margen vs vto.'], 0)}</td>"
+            f"<td>{_escape(row['Incremento necesario'])}</td>"
+            f"<td>{_fmt(row['Días stock dinámicos'], 0)}</td>"
+            f"<td>{_escape(row['Confianza'])}</td>"
+            f"<td class='{klass}'>{_escape(state)}</td>"
+            "</tr>"
+        )
+
+        cards.append(
+            f"<div class='lot-card {card_class}'>"
+            "<div class='lot-top'>"
+            "<div>"
+            f"<div class='lot-code'>{_escape(row['Base'])} · Código {_escape(row['Código'])} · Lote {_escape(row['Lote'])}</div>"
+            f"<div class='lot-title'>{_escape(row['Producto'])}</div>"
+            "</div>"
+            f"<div class='lot-badge {klass}'>{_escape(state)}</div>"
+            "</div>"
+            "<div class='lot-meta'>"
+            f"<div><span>Vence</span><strong>{_date(row['Vencimiento'])}</strong></div>"
+            f"<div><span>Stock lote</span><strong>{_fmt(row['Stock lote'])}</strong></div>"
+            f"<div><span>Venta estimada</span><strong>{_fmt(row['Venta estimada hasta vto.'])}</strong></div>"
+            f"<div><span>Bultos en riesgo</span><strong>{_fmt(row['Bultos en riesgo'])}</strong></div>"
+            f"<div><span>Agotamiento</span><strong>{_date(row['Agotamiento estimado'])}</strong></div>"
+            f"<div><span>Margen vs vto.</span><strong>{_fmt(row['Margen vs vto.'], 0)} días</strong></div>"
+            f"<div><span>Incremento necesario</span><strong>{_escape(row['Incremento necesario'])}</strong></div>"
+            f"<div><span>Confianza</span><strong>{_escape(row['Confianza'])}</strong></div>"
+            "</div>"
+            "</div>"
+        )
+
+    header = (
+        "<thead><tr>"
+        "<th>Base</th><th>Código</th><th>Producto</th><th>Lote</th>"
+        "<th>Stock lote</th><th>Vencimiento</th><th>Venta estimada hasta vto.</th>"
+        "<th>Bultos en riesgo</th><th>Agotamiento estimado</th>"
+        "<th>Margen vs vto.</th><th>Incremento necesario</th>"
+        "<th>Días stock dinámicos</th><th>Confianza</th><th>Estado</th>"
+        "</tr></thead>"
+    )
+
+    st.markdown(
+        "<div class='mobile-lots'>" + "".join(cards) + "</div>"
+        "<div class='table-wrap desktop-table'>"
+        "<table class='fresh-table pred-table'>"
+        + header
+        + "<tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _style():
@@ -195,6 +368,89 @@ def _style():
             font-size:1.45rem;
             margin-top:.2rem;
         }
+
+        /* Tabla predictiva: misma familia visual que Lotes por vencimiento */
+        table.pred-table {
+            min-width: 1780px;
+            font-family: Arial, sans-serif;
+            font-size: .86rem;
+        }
+        table.pred-table th {
+            background: #28549a;
+            color: #ffffff !important;
+            border: 1px solid #111827;
+            padding: .52rem .55rem;
+            text-align: center;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        table.pred-table td {
+            background: #ffffff;
+            color: #111827 !important;
+            border: 1px solid #111827;
+            padding: .46rem .55rem;
+            text-align: right;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        table.pred-table td:nth-child(1),
+        table.pred-table td:nth-child(2),
+        table.pred-table td:nth-child(3) {
+            text-align: left;
+        }
+        table.pred-table td:nth-child(2) {
+            text-align: center;
+        }
+        table.pred-table td:nth-child(3) {
+            white-space: normal;
+            min-width: 285px;
+        }
+        table.pred-table td.bad {
+            background: #ffe4e8 !important;
+            color: #b42318 !important;
+            font-weight: 950;
+        }
+        table.pred-table td.warn {
+            background: #fef3c7 !important;
+            color: #b54708 !important;
+            font-weight: 950;
+        }
+        table.pred-table td.ok {
+            background: #dcfce7 !important;
+            color: #027a48 !important;
+            font-weight: 950;
+        }
+
+        table.source-table {
+            min-width: 760px;
+            font-family: Arial, sans-serif;
+            font-size: .88rem;
+        }
+        table.source-table th {
+            background: #28549a;
+            color: #ffffff !important;
+            border: 1px solid #111827;
+            padding: .5rem .55rem;
+            text-align: center;
+            font-weight: 900;
+        }
+        table.source-table td {
+            background: #ffffff;
+            color: #111827 !important;
+            border: 1px solid #111827;
+            padding: .48rem .55rem;
+            text-align: right;
+            font-weight: 800;
+        }
+        table.source-table td:first-child {
+            text-align: left;
+            font-weight: 900;
+        }
+        table.source-table tr.total-source td {
+            background: #eef4ff;
+            font-weight: 950;
+        }
+
         @media(max-width:760px){
             .forecast-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
         }
@@ -215,11 +471,13 @@ def render_predictive_section(
     """
     _style()
     hist_file = _history_file()
+    super_hist_file = _supermarket_history_file()
 
     st.markdown("## 🔮 Frescura predictiva")
     st.caption(
-        "La proyección usa venta real por día de semana y FEFO. "
-        "La Política de Stock actual queda como referencia, pero ya no gobierna este semáforo."
+        "La proyección usa venta normal + despachos directos a supermercados, "
+        "separados como fuentes pero sumados para calcular la salida real de stock. "
+        "La Política de Stock actual queda como referencia."
     )
 
     if hist_file is None:
@@ -235,11 +493,12 @@ def render_predictive_section(
     try:
         # Actualización automática cada 30 minutos.
         refresh_slot = int(time.time() // 1800)
-        customer_text, sales_text = _operational_sources(
+        customer_text, sales_text, supermarket_text = _operational_sources(
             drive_url, refresh_slot
         )
         customer_path = Path(customer_text)
         sales_path = Path(sales_text)
+        supermarket_path = Path(supermarket_text) if supermarket_text else None
 
         hs = hist_file.stat()
         history = _history(str(hist_file), hs.st_mtime_ns, hs.st_size)
@@ -263,22 +522,60 @@ def render_predictive_section(
             wanted,
         )
 
-        daily = combine_history(history, current)
-        if daily.empty:
-            st.warning("No hay historial de ventas utilizable.")
+        normal_daily = combine_history(history, current)
+        if normal_daily.empty:
+            st.warning("No hay historial de venta normal utilizable.")
             return
 
         if current.empty:
-            as_of = min(date.today(), daily["date"].max().date())
+            as_of = min(date.today(), normal_daily["date"].max().date())
         else:
             as_of = min(date.today(), current["date"].max().date())
 
-        profiles = build_weekday_profiles(
-            daily=daily,
+        # Histórico de supermercados ya procesado desde el reporte aportado.
+        if super_hist_file is not None:
+            sh = super_hist_file.stat()
+            supermarket_history = _history(
+                str(super_hist_file), sh.st_mtime_ns, sh.st_size
+            )
+        else:
+            supermarket_history = pd.DataFrame(
+                columns=["date", "loc", "sku", "bultos"]
+            )
+
+        # Si en Drive hay un ReporteComprobantesDetallado más nuevo,
+        # reemplaza los días coincidentes del histórico compacto.
+        if supermarket_path is not None and supermarket_path.exists():
+            rs = supermarket_path.stat()
+            supermarket_live = _supermarket_current(
+                str(supermarket_path), rs.st_mtime_ns, rs.st_size, wanted
+            )
+            supermarket_daily = combine_history(
+                supermarket_history, supermarket_live
+            )
+        else:
+            supermarket_daily = supermarket_history
+
+        normal_profiles = build_weekday_profiles(
+            daily=normal_daily,
             products=products,
             as_of=as_of,
             recent_occurrences=2,
         )
+
+        supermarket_profiles = build_supermarket_weekday_profiles(
+            daily_super=supermarket_daily,
+            products=products,
+            as_of=as_of,
+            recent_occurrences=8,
+        )
+
+        profiles = combine_normal_and_supermarket_profiles(
+            normal_profiles=normal_profiles,
+            supermarket_profiles=supermarket_profiles,
+            as_of=as_of,
+        )
+
         forecast = simulate_fefo(
             lots=lots,
             profiles=profiles,
@@ -346,7 +643,7 @@ def render_predictive_section(
     st.markdown(html, unsafe_allow_html=True)
 
     pred_tab, rhythm_tab = st.tabs(
-        ["Riesgo proyectado", "Venta estimada por día"]
+        ["Riesgo proyectado", "Salida estimada por día"]
     )
 
     with pred_tab:
@@ -398,20 +695,7 @@ def render_predictive_section(
                 ascending=[True, True, False],
             ).drop(columns="_orden")
 
-            st.dataframe(
-                table,
-                hide_index=True,
-                width="stretch",
-                height=min(700, 55 + len(table) * 35),
-                column_config={
-                    "Vencimiento": st.column_config.DateColumn(
-                        format="DD/MM/YYYY"
-                    ),
-                    "Agotamiento estimado": st.column_config.DateColumn(
-                        format="DD/MM/YYYY"
-                    ),
-                },
-            )
+            _render_predictive_html_table(table)
 
     with rhythm_tab:
         profile_keys = set(
@@ -447,6 +731,7 @@ def render_predictive_section(
             )
             row = pview[pview["selector"].eq(chosen)].iloc[0]
 
+            st.markdown("**Salida total estimada por día**")
             day_cols = st.columns(6)
             for i, (name, field) in enumerate(zip(DAY_NAMES, DAY_COLS)):
                 day_cols[i].metric(
@@ -454,11 +739,14 @@ def render_predictive_section(
                     f"{_fmt(row[field])} bultos",
                 )
 
+            _render_source_breakdown(row)
+
             st.info(
-                f"Venta semanal estimada: {_fmt(row['weekly_bultos'])} bultos · "
+                f"Venta normal semanal: {_fmt(row.get('normal_weekly_bultos', 0))} bultos · "
+                f"Supermercados semanal: {_fmt(row.get('super_weekly_bultos', 0))} bultos · "
+                f"Salida total semanal: {_fmt(row['weekly_bultos'])} bultos · "
                 f"Días de stock dinámicos: {_fmt(row['dynamic_coverage_days'], 0)} · "
-                f"Confianza: {row['confidence']} · "
-                f"Historia propia desde: {row['history_start'] or 'sin historial'}"
+                f"Confianza venta normal: {row['confidence']}"
             )
 
     with st.expander("Cómo leer el nuevo cálculo"):
@@ -472,6 +760,10 @@ def render_predictive_section(
 
 **Incremento necesario:** cuánto debería acelerarse la salida natural para consumir el lote antes de vencer.
 
-El algoritmo distribuye la venta futura usando **FEFO**: primero consume el lote con vencimiento más próximo.
+El algoritmo distribuye la salida futura usando **FEFO**: primero consume el lote con vencimiento más próximo.
+
+**Supermercados:** se suman como salida de stock, pero permanecen separados de la venta normal.
+Se excluye el CD de S.A. Importadora y Exportadora de la Patagonia identificado como cliente 999 / RUTA 25 PQUE.INDUSTRIAL.
+Los comprobantes anulados no entran y las devoluciones restan bultos.
             """
         )

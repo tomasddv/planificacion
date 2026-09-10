@@ -493,6 +493,204 @@ def simulate_fefo(
     return pd.DataFrame(result)
 
 
+
+def load_supermarket_dispatches(
+    report_xlsx: str | Path,
+    wanted_skus: set[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Lee el ReporteComprobantesDetallado de Cuenta y Orden.
+
+    Regla:
+    - Bultos Total positivos = salida a supermercados.
+    - Devoluciones negativas reducen la salida neta.
+    - Comprobantes anulados se excluyen.
+    - Se excluye únicamente el CD de La Anónima:
+      cliente 999 / RUTA 25 PQUE.INDUSTRIAL.
+    """
+    usecols = [
+        "Fecha Comprobante",
+        "Cliente",
+        "Razon Social",
+        "Domicilio",
+        "Descripcion Agrupacion",
+        "Codigo de Articulo",
+        "Bultos Total",
+        "Anulado",
+    ]
+
+    df = pd.read_excel(report_xlsx, sheet_name="Datos", usecols=usecols)
+
+    def norm_code(value):
+        if pd.isna(value):
+            return ""
+        text = str(value).strip()
+        if text.endswith(".0"):
+            text = text[:-2]
+        return text.lstrip("0") or ("0" if text else "")
+
+    df["sku"] = df["Codigo de Articulo"].map(norm_code)
+    df["client"] = df["Cliente"].map(norm_code)
+    df["date"] = pd.to_datetime(df["Fecha Comprobante"], errors="coerce")
+    df["bultos"] = pd.to_numeric(df["Bultos Total"], errors="coerce").fillna(0.0)
+
+    agr = df["Descripcion Agrupacion"].fillna("").astype(str).str.upper()
+    df["loc"] = np.where(
+        agr.str.contains("MADRYN", na=False),
+        "MADRYN",
+        np.where(agr.str.contains("TRELEW", na=False), "TRELEW", None),
+    )
+
+    reason = df["Razon Social"].fillna("").astype(str).str.upper().str.strip()
+    address = df["Domicilio"].fillna("").astype(str).str.upper()
+
+    excluded_cd = (
+        reason.eq("S.A. IMPORTADORA Y EXPORTADORA DE LA PATAGONIA")
+        & (
+            df["client"].eq("999")
+            | (
+                address.str.contains("RUTA 25", na=False)
+                & address.str.contains("PQUE", na=False)
+                & address.str.contains("INDUSTRIAL", na=False)
+            )
+        )
+    )
+
+    valid = (
+        df["Anulado"].fillna("").astype(str).str.upper().ne("SI")
+        & ~excluded_cd
+        & df["loc"].isin(["TRELEW", "MADRYN"])
+        & df["date"].notna()
+    )
+
+    if wanted_skus:
+        wanted = {str(x).lstrip("0") for x in wanted_skus}
+        valid &= df["sku"].isin(wanted)
+
+    out = df.loc[valid, ["date", "loc", "sku", "bultos"]].copy()
+
+    if out.empty:
+        return pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
+
+    return (
+        out.groupby(["date", "loc", "sku"], as_index=False)["bultos"]
+        .sum()
+        .sort_values(["date", "loc", "sku"])
+    )
+
+
+def build_supermarket_weekday_profiles(
+    daily_super: pd.DataFrame,
+    products: pd.DataFrame,
+    as_of: date,
+    recent_occurrences: int = 8,
+) -> pd.DataFrame:
+    """
+    Promedio esperado de salida a supermercados por día de semana.
+    Usa una ventana más estable que venta normal porque estos despachos
+    son más grandes e irregulares.
+    """
+    products_n = _normalise_products(products)
+
+    hist = daily_super[daily_super["date"].dt.date <= as_of].copy()
+    lookup = {
+        (r.loc, r.sku, r.date.date()): float(r.bultos)
+        for r in hist.itertuples(index=False)
+    }
+
+    first = {}
+    positive = hist[hist["bultos"] != 0]
+    for (loc, sku), grp in positive.groupby(["loc", "sku"]):
+        first[(loc, sku)] = grp["date"].min().date()
+
+    rows = []
+    for row in products_n.itertuples(index=False):
+        loc = row.loc
+        sku = row.sku
+        floor = first.get((loc, sku))
+
+        profile = {}
+        for weekday in range(6):
+            values = []
+            if floor:
+                for d in _weekday_previous_dates(
+                    as_of, weekday, recent_occurrences, floor
+                ):
+                    values.append(lookup.get((loc, sku, d), 0.0))
+
+            # Las devoluciones pueden reducir el despacho neto del día,
+            # pero nunca proyectamos una "salida negativa" futura.
+            estimate = float(np.mean(values)) if values else 0.0
+            profile[DAY_COLS[weekday]] = max(estimate, 0.0)
+
+        rows.append({
+            "loc": loc,
+            "sku": sku,
+            "super_weekly_bultos": sum(profile.values()),
+            **{f"super_{k}": v for k, v in profile.items()},
+        })
+
+    return pd.DataFrame(rows)
+
+
+def combine_normal_and_supermarket_profiles(
+    normal_profiles: pd.DataFrame,
+    supermarket_profiles: pd.DataFrame,
+    as_of: date,
+) -> pd.DataFrame:
+    """
+    Mantiene conceptualmente separadas:
+    - venta normal del distribuidor
+    - salida a supermercados
+
+    pero suma ambas para calcular consumo de stock y riesgo de frescura.
+    """
+    merged = normal_profiles.merge(
+        supermarket_profiles,
+        on=["loc", "sku"],
+        how="left",
+    )
+
+    for col in DAY_COLS:
+        merged[f"normal_{col}"] = pd.to_numeric(
+            merged[col], errors="coerce"
+        ).fillna(0.0)
+
+        merged[f"super_{col}"] = pd.to_numeric(
+            merged.get(f"super_{col}", 0.0), errors="coerce"
+        ).fillna(0.0)
+
+        merged[col] = merged[f"normal_{col}"] + merged[f"super_{col}"]
+
+    merged["normal_weekly_bultos"] = merged[
+        [f"normal_{c}" for c in DAY_COLS]
+    ].sum(axis=1)
+    merged["super_weekly_bultos"] = merged[
+        [f"super_{c}" for c in DAY_COLS]
+    ].sum(axis=1)
+    merged["weekly_bultos"] = merged[DAY_COLS].sum(axis=1)
+    merged["avg_sale_day"] = merged["weekly_bultos"] / 6.0
+
+    depletion_dates = []
+    coverage_days = []
+
+    for rec in merged.to_dict("records"):
+        depletion = estimate_depletion_date(
+            stock=float(rec.get("stock_total", 0.0)),
+            profile=rec,
+            as_of=as_of,
+        )
+        depletion_dates.append(depletion)
+        coverage_days.append(
+            (depletion - as_of).days if depletion is not None else np.nan
+        )
+
+    merged["sku_depletion_date"] = depletion_dates
+    merged["dynamic_coverage_days"] = coverage_days
+
+    return merged
+
+
 def forecast_summary(forecast: pd.DataFrame) -> dict:
     if forecast.empty:
         return {
