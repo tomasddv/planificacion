@@ -10,7 +10,7 @@ import traceback
 import unicodedata
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from source_info import SourceInfo
 from pathlib import Path
 
 import numpy as np
@@ -309,11 +309,6 @@ def current_data_dir(force_refresh: bool = False) -> Path:
     )
 
 
-@dataclass(frozen=True)
-class SourceInfo:
-    label: str
-    path: str | None
-    modified: str | None
 
 
 def excel_col_to_index(letter: str) -> int:
