@@ -462,12 +462,22 @@ def normalize_bultos(raw: pd.DataFrame, quantity_col: str) -> pd.DataFrame:
     return normalized
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_raw_source(path_text: str, modified_ns: int, size: int) -> pd.DataFrame:
+    return sales_app.read_tabular(Path(path_text))
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_uploaded_source(content: bytes) -> pd.DataFrame:
+    return sales_app.read_tabular(io.BytesIO(content))
+
+
 def read_raw_source(path: Path | None, uploaded_file) -> tuple[pd.DataFrame, str]:
     if uploaded_file is not None:
-        return sales_app.read_tabular(io.BytesIO(uploaded_file.getvalue())), uploaded_file.name
+        return cached_uploaded_source(uploaded_file.getvalue()), uploaded_file.name
     if path is None:
         return pd.DataFrame(), ""
-    return sales_app.read_tabular(path), path.name
+    return cached_raw_source(str(path), path.stat().st_mtime_ns, path.stat().st_size), path.name
 
 
 def load_bultos_customer_channels(path: Path | None) -> pd.DataFrame:
@@ -527,9 +537,9 @@ def fallback_data_folder() -> Path | None:
     return None
 
 
-def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override: str | None = None) -> tuple[pd.DataFrame, str, list[str], str]:
+def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override: str | None = None, raw_source: tuple[pd.DataFrame, str] | None = None) -> tuple[pd.DataFrame, str, list[str], str]:
     source_path = latest_bultos_file(folder)
-    raw, source_label = read_raw_source(source_path, uploaded_file)
+    raw, source_label = raw_source if raw_source is not None else read_raw_source(source_path, uploaded_file)
     if raw.empty:
         return pd.DataFrame(), "", [], ""
 
@@ -648,11 +658,16 @@ def empty_extensions() -> pd.DataFrame:
     )
 
 
+@st.cache_data(show_spinner=False, ttl=120, max_entries=8)
+def read_extensions_workbook(sheet_url: str):
+    return pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, dtype="string")
+
+
 def load_top_extensions(sheet_url: str) -> pd.DataFrame:
     if not sheet_url:
         return empty_extensions()
     try:
-        workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, dtype="string")
+        workbook = read_extensions_workbook(sheet_url)
     except Exception:
         return empty_extensions()
     sheet = next((data for name, data in workbook.items() if clean_name(name) == clean_name(EXTENSION_SHEET_NAME)), None)
@@ -1219,7 +1234,7 @@ def main() -> None:
 
     folder = prepare_drive_sources(
         drive_url,
-        force_refresh=bool(st.session_state["bultos_drive_refresh"]),
+        force_refresh=bool(st.session_state.pop("bultos_drive_refresh", 0.0)),
     )
     if folder is None:
         st.sidebar.warning("No pude leer Google Drive. Use carga manual o revise el link/permiso.")
@@ -1247,7 +1262,7 @@ def main() -> None:
         loading_placeholder.empty()
         st.error(f"El archivo debe tener la columna '{TARGET_QUANTITY_COLUMN}' para calcular bultos.")
         return
-    data, source_label, _, quantity_used = load_enriched_data(folder, uploaded_file, quantity_col)
+    data, source_label, _, quantity_used = load_enriched_data(folder, uploaded_file, quantity_col, (raw, source_label))
     st.sidebar.caption(f"Columna usada: {quantity_used}")
     loading_placeholder.empty()
 
@@ -1273,7 +1288,7 @@ def main() -> None:
     value_export = export_action_table(summary_view, "VALUE")
     st.download_button(
         "Exportar listado Excel",
-        data=export_summary_excel(core_export, value_export),
+        data=lambda: export_summary_excel(core_export, value_export),
         file_name="clientes_tope_core_value.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",

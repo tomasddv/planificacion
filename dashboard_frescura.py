@@ -434,9 +434,18 @@ def find_header_row(raw: pd.DataFrame) -> int | None:
 
 
 def read_freshness_file(path: Path | None = None, uploaded=None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    name = uploaded.name if uploaded is not None else path.name if path is not None else ""
+    if uploaded is not None:
+        return cached_freshness_file(uploaded.name, uploaded.getvalue(), "", 0, 0)
+    if path is None:
+        raise ValueError("Falta el archivo de frescura")
+    stat = path.stat()
+    return cached_freshness_file(path.name, None, str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_freshness_file(name: str, content_bytes: bytes | None, path_text: str, modified_ns: int, size: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     city = city_from_name(name)
-    content = io.BytesIO(uploaded.getvalue()) if uploaded is not None else path
+    content = io.BytesIO(content_bytes) if content_bytes is not None else Path(path_text)
     raw = pd.read_excel(content, sheet_name=0, header=None)
     header_row = find_header_row(raw)
     if header_row is None:
@@ -806,7 +815,7 @@ def main() -> None:
         st.session_state["frescura_refresh"] = time.time()
         st.cache_data.clear()
 
-    folder = prepare_drive_sources(drive_url, force_refresh=bool(st.session_state["frescura_refresh"]))
+    folder = prepare_drive_sources(drive_url, force_refresh=bool(st.session_state.pop("frescura_refresh", 0.0)))
     files = template_files(folder)
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'Downloads/local'}")
     if files:
@@ -840,7 +849,7 @@ def main() -> None:
 
     st.download_button(
         "Exportar Excel",
-        data=export_excel(product_view, lot_view),
+        data=lambda: export_excel(product_view, lot_view),
         file_name="control_frescura.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         width="stretch",

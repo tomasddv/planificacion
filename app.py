@@ -241,6 +241,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     tmp_target.mkdir(parents=True, exist_ok=True)
 
     download_notes: list[str] = []
+    downloaded_ids: set[str] = set()
 
     def wanted_drive_file(name: str) -> bool:
         normalized = normalized_drive_filename(Path(str(name)).name)
@@ -264,6 +265,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
             gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
             if output.exists() and output.stat().st_size > 0:
                 download_notes.append(f"{label}: actualizado")
+                downloaded_ids.add(file_id)
             else:
                 download_notes.append(f"{label}: sin descarga")
         except Exception as exc:
@@ -277,7 +279,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
             drive_files = gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False, skip_download=True)
             for file in drive_files or []:
                 local_name = Path(str(file.path)).name
-                if not wanted_drive_file(local_name):
+                if file.id in downloaded_ids or not wanted_drive_file(local_name):
                     continue
                 download_by_id(file.id, tmp_target / local_name, local_name)
         except Exception as exc:
@@ -892,6 +894,7 @@ def mesa_from_promoter(series: pd.Series) -> pd.Series:
     return names.map(PROMOTER_MESA_MAP).fillna("Sin mesa")
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_source_from_path(
     path_text: str,
     modified_ns: int,
@@ -907,6 +910,7 @@ def load_source_from_path(
     return normalize(raw), info
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_annual_source_from_path(
     path_text: str,
     modified_ns: int,
@@ -922,6 +926,7 @@ def load_annual_source_from_path(
     return normalize(raw), info
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_source_from_upload(
     name: str,
     content: bytes,
@@ -1062,6 +1067,7 @@ def workbook_sheet_name_from_workbook(workbook, contains: str) -> str | None:
     return next((name for name in workbook.sheetnames if target in clean_name(name)), None)
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_customer_channels(
     path_text: str,
     modified_ns: int,
@@ -1179,6 +1185,7 @@ def normalize_beer_segment(value: str | None) -> str:
     return "CVZA SIN SEGMENTO"
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_auxiliary_segments(
     path_text: str,
     modified_ns: int,
@@ -1239,6 +1246,7 @@ def apply_auxiliary_segments(df: pd.DataFrame, aux_segments: dict[str, pd.DataFr
     return result.drop(columns=[col for col in ["marca_key", "calibre_key", "segmento_cerveza", "segmento_ung"] if col in result.columns])
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
     info = SourceInfo(
@@ -1584,6 +1592,7 @@ def load_remote_planning_sheet(raw_url: str, selected_date_text: str) -> pd.Data
     return parse_planning_sheet_workbook(workbook, pd.Timestamp(selected_date_text))
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
 def load_planner_objectives(path_text: str, modified_ns: int) -> tuple[pd.DataFrame, SourceInfo]:
     path = Path(path_text)
     if path.suffix.lower() in {".xlsx", ".xls"}:
