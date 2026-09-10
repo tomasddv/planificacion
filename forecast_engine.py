@@ -16,7 +16,7 @@ SPANISH_MONTHS = {
     "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12,
 }
 
-# Parámetros acordados para Frescura Predictiva v10.
+# Parámetros acordados para Frescura Predictiva v11 (misma lógica de cálculo v9).
 HIST_MONTH_WEIGHTS = (0.20, 0.30, 0.50)  # mes -3, -2, -1
 HIST_BLEND_WEIGHT = 0.70
 CURRENT_BLEND_WEIGHT = 0.30
@@ -250,7 +250,7 @@ def _source_monthly_profile(
     loc: str | None = None,
 ) -> dict:
     """
-    Motor de ritmo v9:
+    Motor de ritmo v9 (vigente en v11):
     - 3 meses completos previos ponderados 20% / 30% / 50%.
     - Mes actual proyectado por ritmo transcurrido.
     - Blend final 70% histórico + 30% mes actual.
