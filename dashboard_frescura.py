@@ -835,6 +835,8 @@ def main() -> None:
     if products.empty:
         st.warning("No encontre plantillas de frescura. Subilas al Drive o cargalas manualmente.")
         return
+        
+        render_predictive_section(products, lots, drive_url)
 
     product_view, lot_view = apply_filters(products, lots)
     render_kpis(product_view, lot_view)
