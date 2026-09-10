@@ -414,9 +414,14 @@ def cell_name(row_index: int, col_index: int) -> str:
     return f"{col_letter(col_index + 1)}{row_index + 1}"
 
 
+@st.cache_data(show_spinner=False, ttl=120, max_entries=8)
+def read_planning_workbook(sheet_url: str):
+    return pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, header=None)
+
+
 @st.cache_data(show_spinner=False, ttl=120)
 def load_sheet(sheet_url: str, selected_date_key: str = "") -> pd.DataFrame:
-    workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, header=None)
+    workbook = read_planning_workbook(sheet_url)
     rows: list[dict[str, object]] = []
     for sheet_name, sheet in workbook.items():
         if sheet.empty or clean_text(sheet_name) == "BD PLANIFICACION":
@@ -526,7 +531,7 @@ def parse_planning_db(workbook: dict[str, pd.DataFrame], selected_date_key: str 
 
 @st.cache_data(show_spinner=False, ttl=120)
 def load_sheet_days(sheet_url: str) -> pd.DataFrame:
-    workbook = pd.read_excel(google_sheet_export_url(sheet_url), sheet_name=None, header=None)
+    workbook = read_planning_workbook(sheet_url)
     rows: list[dict[str, object]] = []
     for sheet_name, sheet in workbook.items():
         if sheet.empty or clean_text(sheet_name) == "BD PLANIFICACION":
@@ -1246,7 +1251,7 @@ def main() -> None:
 
         st.download_button(
             "Exportar PDF completo - 4 focos",
-            data=all_focus_pdf_bytes(selected_date, focus_payloads),
+            data=lambda: all_focus_pdf_bytes(selected_date, focus_payloads),
             file_name=f"planificacion_promotores_{selected_date.strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
             width="stretch",
