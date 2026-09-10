@@ -258,7 +258,10 @@ def _source_monthly_profile(
     - Si `loc` es None suma Trelew + Madryn; si se informa, calcula sólo esa base.
     """
     if daily.empty:
-        sku_daily = pd.DataFrame(columns=["date", "bultos"])
+        sku_daily = pd.DataFrame({
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "bultos": pd.Series(dtype="float64"),
+        })
     else:
         x = daily.copy()
         x["date"] = pd.to_datetime(x["date"], errors="coerce")
@@ -391,6 +394,26 @@ def estimate_depletion_date(
     return None
 
 
+def _index_daily_groups(daily: pd.DataFrame, scope: str) -> dict:
+    """
+    Prepara una sola vez el histórico para evitar recorrer/copiar toda la tabla
+    por cada SKU. No modifica ninguna fórmula; sólo acelera el cálculo.
+    """
+    if daily.empty:
+        return {}
+    x = daily[["date", "loc", "sku", "bultos"]].copy()
+    x["date"] = pd.to_datetime(x["date"], errors="coerce")
+    x["sku"] = _code(x["sku"])
+    x["loc"] = x["loc"].fillna("").astype(str).str.upper().str.strip()
+    x["bultos"] = pd.to_numeric(x["bultos"], errors="coerce").fillna(0.0)
+    x = x[x["date"].notna() & x["loc"].isin(["TRELEW", "MADRYN"])].copy()
+    if x.empty:
+        return {}
+    if scope == "DDV":
+        return {str(k): g for k, g in x.groupby("sku", sort=False)}
+    return {(str(loc), str(sku)): g for (loc, sku), g in x.groupby(["loc", "sku"], sort=False)}
+
+
 def build_weekday_profiles(
     daily: pd.DataFrame,
     products: pd.DataFrame,
@@ -402,15 +425,20 @@ def build_weekday_profiles(
     del recent_occurrences
     scope = str(scope).upper().strip()
     scoped_products = _products_ddv(products) if scope == "DDV" else _products_by_base(products)
+    grouped_daily = _index_daily_groups(daily, scope)
+    empty_daily = pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
     rows = []
     for row in scoped_products.to_dict("records"):
-        loc_filter = None if scope == "DDV" else row["loc"]
+        if scope == "DDV":
+            daily_slice = grouped_daily.get(str(row["sku"]), empty_daily)
+        else:
+            daily_slice = grouped_daily.get((str(row["loc"]), str(row["sku"])), empty_daily)
         p = _source_monthly_profile(
-            daily=daily,
+            daily=daily_slice,
             sku=row["sku"],
             as_of=as_of,
             fallback_daily=row.get("venta_promedio", 0.0),
-            loc=loc_filter,
+            loc=None,
         )
         depletion = estimate_depletion_date(row["stock_total"], p, as_of)
         age_weeks = (
@@ -523,15 +551,20 @@ def build_supermarket_weekday_profiles(
     del recent_occurrences
     scope = str(scope).upper().strip()
     scoped_products = _products_ddv(products) if scope == "DDV" else _products_by_base(products)
+    grouped_daily = _index_daily_groups(daily_super, scope)
+    empty_daily = pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
     rows = []
     for row in scoped_products.to_dict("records"):
-        loc_filter = None if scope == "DDV" else row["loc"]
+        if scope == "DDV":
+            daily_slice = grouped_daily.get(str(row["sku"]), empty_daily)
+        else:
+            daily_slice = grouped_daily.get((str(row["loc"]), str(row["sku"])), empty_daily)
         p = _source_monthly_profile(
-            daily=daily_super,
+            daily=daily_slice,
             sku=row["sku"],
             as_of=as_of,
             fallback_daily=0.0,
-            loc=loc_filter,
+            loc=None,
         )
         rows.append({
             "loc": row["loc"],

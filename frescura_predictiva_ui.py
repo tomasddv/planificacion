@@ -179,6 +179,41 @@ def _supermarket_current(
     )
 
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def _forecast_views_cached(
+    normal_daily: pd.DataFrame,
+    supermarket_daily: pd.DataFrame,
+    products: pd.DataFrame,
+    lots: pd.DataFrame,
+    as_of_iso: str,
+):
+    """
+    Calcula las tres vistas una sola vez por snapshot de datos.
+    Los filtros/solapas posteriores reutilizan el resultado en caché.
+    """
+    as_of = pd.Timestamp(as_of_iso).date()
+
+    normal_ddv = build_weekday_profiles(
+        normal_daily, products, as_of, recent_occurrences=2, scope="DDV"
+    )
+    super_ddv = build_supermarket_weekday_profiles(
+        supermarket_daily, products, as_of, recent_occurrences=8, scope="DDV"
+    )
+    profiles_ddv = combine_normal_and_supermarket_profiles(normal_ddv, super_ddv, as_of)
+    forecast_ddv = simulate_fefo(lots, profiles_ddv, as_of, scope="DDV")
+
+    normal_base = build_weekday_profiles(
+        normal_daily, products, as_of, recent_occurrences=2, scope="BASE"
+    )
+    super_base = build_supermarket_weekday_profiles(
+        supermarket_daily, products, as_of, recent_occurrences=8, scope="BASE"
+    )
+    profiles_base = combine_normal_and_supermarket_profiles(normal_base, super_base, as_of)
+    forecast_base = simulate_fefo(lots, profiles_base, as_of, scope="BASE")
+
+    return profiles_ddv, forecast_ddv, profiles_base, forecast_base
+
+
 def _fmt(value: object, decimals: int = 1) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -684,10 +719,10 @@ def render_predictive_section(
     super_hist_file = _supermarket_history_file()
 
     icon_path = sales_app.PROJECT_ROOT / "mini_mentalista.png"
-    h1, h2 = st.columns([0.09, 0.91], vertical_alignment="center")
+    h1, h2 = st.columns([0.105, 0.895], vertical_alignment="center")
     with h1:
         if icon_path.exists():
-            st.image(str(icon_path), width=64)
+            st.image(str(icon_path), width=84)
         else:
             st.markdown("### 🔮")
     with h2:
@@ -706,6 +741,9 @@ def render_predictive_section(
     if products.empty or lots.empty:
         st.info("No hay stock/lotes suficientes para calcular el pronóstico.")
         return
+
+    loading = st.empty()
+    loading.caption("⏳ Actualizando fuentes y calculando las tres vistas...")
 
     try:
         refresh_slot = int(time.time() // 1800)
@@ -760,31 +798,23 @@ def render_predictive_section(
         local_today = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").date()
         as_of = min(local_today, max(source_dates))
 
-        # Vista DDV unificada: misma lógica exacta de v9.
-        normal_ddv = build_weekday_profiles(
-            normal_daily, products, as_of, recent_occurrences=2, scope="DDV"
+        # Las tres vistas comparten la misma lógica v9; el resultado se cachea por snapshot.
+        profiles_ddv, forecast_ddv, profiles_base, forecast_base = _forecast_views_cached(
+            normal_daily=normal_daily,
+            supermarket_daily=supermarket_daily,
+            products=products,
+            lots=lots,
+            as_of_iso=as_of.isoformat(),
         )
-        super_ddv = build_supermarket_weekday_profiles(
-            supermarket_daily, products, as_of, recent_occurrences=8, scope="DDV"
-        )
-        profiles_ddv = combine_normal_and_supermarket_profiles(normal_ddv, super_ddv, as_of)
-        forecast_ddv = simulate_fefo(lots, profiles_ddv, as_of, scope="DDV")
-
-        # Vista por base: mismo cálculo v9, pero historia, stock y FEFO separados por locación.
-        normal_base = build_weekday_profiles(
-            normal_daily, products, as_of, recent_occurrences=2, scope="BASE"
-        )
-        super_base = build_supermarket_weekday_profiles(
-            supermarket_daily, products, as_of, recent_occurrences=8, scope="BASE"
-        )
-        profiles_base = combine_normal_and_supermarket_profiles(normal_base, super_base, as_of)
-        forecast_base = simulate_fefo(lots, profiles_base, as_of, scope="BASE")
 
     except Exception as exc:
+        loading.empty()
         st.error(f"No pude calcular Frescura Predictiva: {type(exc).__name__}: {exc}")
         with st.expander("Ver detalle técnico"):
             st.code(traceback.format_exc())
         return
+
+    loading.empty()
 
     if forecast_ddv.empty and forecast_base.empty:
         st.info("No se generaron lotes predictivos.")
