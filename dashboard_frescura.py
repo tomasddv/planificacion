@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import app as sales_app
-
+from frescura_predictiva_ui import render_predictive_section
 
 APP_TITLE = "Control de frescura"
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
