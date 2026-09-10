@@ -250,7 +250,7 @@ def _render_source_breakdown(row: pd.Series) -> None:
     )
 
 
-def _render_predictive_html_table(table: pd.DataFrame) -> None:
+def _render_predictive_html_table(table: pd.DataFrame, scope_label: str = "DDV") -> None:
     """Tabla predictiva con la misma estética visual del tablero histórico."""
     if table.empty:
         st.info("No hay lotes con esos filtros.")
@@ -266,10 +266,10 @@ def _render_predictive_html_table(table: pd.DataFrame) -> None:
 
         rows.append(
             "<tr>"
-            f"<td>{_escape(row['Base'])}</td>"
             f"<td>{_escape(row['Código'])}</td>"
             f"<td>{_escape(row['Producto'])}</td>"
             f"<td>{_escape(row['Lote'])}</td>"
+            f"<td>{_escape(row['Ubicación'])}</td>"
             f"<td>{_fmt(row['Stock lote'])}</td>"
             f"<td>{_date(row['Vencimiento'])}</td>"
             f"<td>{_fmt(row['Venta estimada hasta vto.'])}</td>"
@@ -287,12 +287,13 @@ def _render_predictive_html_table(table: pd.DataFrame) -> None:
             f"<div class='lot-card {card_class}'>"
             "<div class='lot-top'>"
             "<div>"
-            f"<div class='lot-code'>{_escape(row['Base'])} · Código {_escape(row['Código'])} · Lote {_escape(row['Lote'])}</div>"
+            f"<div class='lot-code'>{_escape(scope_label)} · Código {_escape(row['Código'])} · Lote {_escape(row['Lote'])}</div>"
             f"<div class='lot-title'>{_escape(row['Producto'])}</div>"
             "</div>"
             f"<div class='lot-badge {klass}'>{_escape(state)}</div>"
             "</div>"
             "<div class='lot-meta'>"
+            f"<div><span>Ubicación</span><strong>{_escape(row['Ubicación'])}</strong></div>"
             f"<div><span>Vence</span><strong>{_date(row['Vencimiento'])}</strong></div>"
             f"<div><span>Stock lote</span><strong>{_fmt(row['Stock lote'])}</strong></div>"
             f"<div><span>Venta estimada</span><strong>{_fmt(row['Venta estimada hasta vto.'])}</strong></div>"
@@ -307,7 +308,7 @@ def _render_predictive_html_table(table: pd.DataFrame) -> None:
 
     header = (
         "<thead><tr>"
-        "<th>Base</th><th>Código</th><th>Producto</th><th>Lote</th>"
+        "<th>Código</th><th>Producto</th><th>Lote</th><th>Ubicación</th>"
         "<th>Stock lote</th><th>Vencimiento</th><th>Venta estimada hasta vto.</th>"
         "<th>Bultos en riesgo</th><th>Agotamiento estimado</th>"
         "<th>Margen vs vto.</th><th>Incremento necesario</th>"
@@ -460,171 +461,73 @@ def _style():
     )
 
 
-def render_predictive_section(
-    products: pd.DataFrame,
-    lots: pd.DataFrame,
-    drive_url: str,
+def _render_forecast_workspace(
+    forecast: pd.DataFrame,
+    profiles: pd.DataFrame,
+    as_of: date,
+    mode: str,
 ) -> None:
-    """
-    Agrega el análisis predictivo al dashboard actual sin modificar
-    la lógica vieja de Política de Stock.
-    """
-    _style()
-    hist_file = _history_file()
-    super_hist_file = _supermarket_history_file()
+    """Dibuja una vista completa manteniendo la estética v6/v9."""
+    is_base = mode.upper() == "BASE"
+    key_prefix = "pred_base" if is_base else "pred_ddv"
 
-    st.markdown("## 🔮 Frescura predictiva")
-    st.caption(
-        "La proyección usa venta normal + despachos directos a supermercados, "
-        "separados como fuentes pero sumados para calcular la salida real de stock. "
-        "La Política de Stock actual queda como referencia."
-    )
-
-    if hist_file is None:
-        st.error(
-            "Falta `historico_frescura_bultos.csv.gz` en la raíz del repositorio."
-        )
-        return
-
-    if products.empty or lots.empty:
-        st.info("No hay stock/lotes suficientes para calcular el pronóstico.")
-        return
-
-    try:
-        # Actualización automática cada 30 minutos.
-        refresh_slot = int(time.time() // 1800)
-        customer_text, sales_text, supermarket_text = _operational_sources(
-            drive_url, refresh_slot
-        )
-        customer_path = Path(customer_text)
-        sales_path = Path(sales_text)
-        supermarket_path = Path(supermarket_text) if supermarket_text else None
-
-        hs = hist_file.stat()
-        history = _history(str(hist_file), hs.st_mtime_ns, hs.st_size)
-
-        wanted = tuple(
-            sorted(
-                products["codigo"]
-                .dropna()
-                .astype(str)
-                .str.replace(r"\.0$", "", regex=True)
-                .str.lstrip("0")
-                .unique()
-            )
-        )
-
-        ss = sales_path.stat()
-        cs = customer_path.stat()
-        current = _current(
-            str(sales_path), ss.st_mtime_ns, ss.st_size,
-            str(customer_path), cs.st_mtime_ns, cs.st_size,
-            wanted,
-        )
-
-        normal_daily = combine_history(history, current)
-        if normal_daily.empty:
-            st.warning("No hay historial de venta normal utilizable.")
-            return
-
-        if current.empty:
-            as_of = min(date.today(), normal_daily["date"].max().date())
-        else:
-            as_of = min(date.today(), current["date"].max().date())
-
-        # Histórico de supermercados ya procesado desde el reporte aportado.
-        if super_hist_file is not None:
-            sh = super_hist_file.stat()
-            supermarket_history = _history(
-                str(super_hist_file), sh.st_mtime_ns, sh.st_size
-            )
-        else:
-            supermarket_history = pd.DataFrame(
-                columns=["date", "loc", "sku", "bultos"]
-            )
-
-        # Si en Drive hay un ReporteComprobantesDetallado más nuevo,
-        # reemplaza los días coincidentes del histórico compacto.
-        if supermarket_path is not None and supermarket_path.exists():
-            rs = supermarket_path.stat()
-            supermarket_live = _supermarket_current(
-                str(supermarket_path), rs.st_mtime_ns, rs.st_size, wanted
-            )
-            supermarket_daily = combine_history(
-                supermarket_history, supermarket_live
-            )
-        else:
-            supermarket_daily = supermarket_history
-
-        normal_profiles = build_weekday_profiles(
-            daily=normal_daily,
-            products=products,
-            as_of=as_of,
-            recent_occurrences=2,
-        )
-
-        supermarket_profiles = build_supermarket_weekday_profiles(
-            daily_super=supermarket_daily,
-            products=products,
-            as_of=as_of,
-            recent_occurrences=8,
-        )
-
-        profiles = combine_normal_and_supermarket_profiles(
-            normal_profiles=normal_profiles,
-            supermarket_profiles=supermarket_profiles,
-            as_of=as_of,
-        )
-
-        forecast = simulate_fefo(
-            lots=lots,
-            profiles=profiles,
-            as_of=as_of,
-        )
-    except Exception as exc:
-        st.error(f"No pude calcular Frescura Predictiva: {type(exc).__name__}: {exc}")
-        with st.expander("Ver detalle técnico"):
-            st.code(traceback.format_exc())
-        return
-
-    if forecast.empty:
-        st.info("No se generaron lotes predictivos.")
-        return
-
-    # Filtros propios: no dependen del estado viejo.
     c1, c2, c3 = st.columns([1, 1, 2])
-    cities = sorted(forecast["ciudad"].dropna().astype(str).unique().tolist())
-    with c1:
-        city = st.multiselect(
-            "Base",
-            cities,
-            default=cities,
-            key="pred_city",
-        )
+    if is_base:
+        options = [x for x in ["Trelew", "Madryn"] if x in set(forecast["ciudad"].astype(str))]
+        with c1:
+            selected_locations = st.multiselect(
+                "Base",
+                options,
+                default=options,
+                key=f"{key_prefix}_location",
+            )
+    else:
+        options = ["Trelew", "Madryn"]
+        with c1:
+            selected_locations = st.multiselect(
+                "Stock en",
+                options,
+                default=options,
+                key=f"{key_prefix}_location",
+            )
+
     with c2:
         state = st.selectbox(
             "Estado predictivo",
             ["Todos", "CRITICO", "ACCIONAR", "OK"],
-            key="pred_state",
+            key=f"{key_prefix}_state",
         )
     with c3:
         search = st.text_input(
             "SKU / producto",
             placeholder="Ej.: 30645 o Pepsi",
-            key="pred_search",
+            key=f"{key_prefix}_search",
         )
 
-    view = forecast[forecast["ciudad"].isin(city)].copy()
+    view = forecast.copy()
+    if selected_locations:
+        if is_base:
+            view = view[view["ciudad"].isin(selected_locations)].copy()
+        else:
+            loc_pattern = "|".join(selected_locations)
+            view = view[
+                view["ubicacion_stock"].fillna("").str.contains(
+                    loc_pattern, case=False, regex=True
+                )
+            ].copy()
+    else:
+        view = view.iloc[0:0].copy()
+
     if state != "Todos":
         view = view[view["estado_predictivo"].eq(state)].copy()
     if search.strip():
         terms = [_clean(x) for x in search.split() if x.strip()]
-        text = (
+        searchable = (
             view["codigo"].fillna("").astype(str)
             + " "
             + view["descripcion"].fillna("").astype(str).map(_clean)
         )
-        view = view[text.apply(lambda x: all(t in x for t in terms))].copy()
+        view = view[searchable.apply(lambda x: all(t in x for t in terms))].copy()
 
     summary = forecast_summary(view)
     cards = [
@@ -633,25 +536,23 @@ def render_predictive_section(
         ("Críticos", str(summary["critical_lots"]), "prioridad alta", "red"),
         ("Venta al", as_of.strftime("%d/%m/%Y"), "último día usado", "green"),
     ]
-    html = "<div class='forecast-kpis'>"
+    html_cards = "<div class='forecast-kpis'>"
     for label, value, sub, klass in cards:
-        html += (
+        html_cards += (
             f"<div class='forecast-kpi {klass}'>"
             f"<span>{label}</span><strong>{value}</strong><div>{sub}</div></div>"
         )
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
+    html_cards += "</div>"
+    st.markdown(html_cards, unsafe_allow_html=True)
 
-    pred_tab, rhythm_tab = st.tabs(
-        ["Riesgo proyectado", "Salida estimada por día"]
-    )
+    pred_tab, rhythm_tab = st.tabs(["Riesgo proyectado", "Salida estimada por día"])
 
     with pred_tab:
         if view.empty:
             st.info("No hay lotes con esos filtros.")
         else:
             table = view[[
-                "ciudad", "codigo", "descripcion", "lote_nro",
+                "codigo", "descripcion", "lote_nro", "ubicacion_stock",
                 "stock_lote", "fecha_vencimiento",
                 "venta_estimada_hasta_vto", "bultos_riesgo",
                 "agotamiento_estimado", "margen_frescura_dias",
@@ -660,10 +561,10 @@ def render_predictive_section(
             ]].copy()
 
             table = table.rename(columns={
-                "ciudad": "Base",
                 "codigo": "Código",
                 "descripcion": "Producto",
                 "lote_nro": "Lote",
+                "ubicacion_stock": "Ubicación",
                 "stock_lote": "Stock lote",
                 "fecha_vencimiento": "Vencimiento",
                 "venta_estimada_hasta_vto": "Venta estimada hasta vto.",
@@ -680,14 +581,9 @@ def render_predictive_section(
                 "Stock lote", "Venta estimada hasta vto.",
                 "Bultos en riesgo", "Días stock dinámicos",
             ]:
-                table[col] = pd.to_numeric(
-                    table[col], errors="coerce"
-                ).round(1)
+                table[col] = pd.to_numeric(table[col], errors="coerce").round(1)
 
-            table["Incremento necesario"] = table[
-                "Incremento necesario"
-            ].map(_pct)
-
+            table["Incremento necesario"] = table["Incremento necesario"].map(_pct)
             order = {"CRITICO": 0, "ACCIONAR": 1, "OK": 2}
             table["_orden"] = table["Estado"].map(order).fillna(9)
             table = table.sort_values(
@@ -695,75 +591,225 @@ def render_predictive_section(
                 ascending=[True, True, False],
             ).drop(columns="_orden")
 
-            _render_predictive_html_table(table)
+            _render_predictive_html_table(
+                table,
+                scope_label="BASE" if is_base else "DDV",
+            )
 
     with rhythm_tab:
-        profile_keys = set(
-            zip(
-                view["ciudad"].astype(str).str.upper(),
-                view["codigo"].astype(str).str.lstrip("0"),
+        if is_base:
+            selected_upper = {x.upper() for x in selected_locations}
+            profile_keys = set(
+                zip(
+                    view["ciudad"].astype(str).str.upper(),
+                    view["codigo"].astype(str).str.lstrip("0"),
+                )
             )
-        )
-        pview = profiles[
-            profiles.apply(
-                lambda r: (
-                    str(r["loc"]).upper(),
-                    str(r["sku"]).lstrip("0"),
-                ) in profile_keys,
-                axis=1,
-            )
-        ].copy()
+            pview = profiles[
+                profiles.apply(
+                    lambda r: (
+                        str(r["loc"]).upper(),
+                        str(r["sku"]).lstrip("0"),
+                    ) in profile_keys,
+                    axis=1,
+                )
+            ].copy()
+        else:
+            profile_keys = set(view["codigo"].astype(str).str.lstrip("0"))
+            pview = profiles[
+                profiles["sku"].astype(str).str.lstrip("0").isin(profile_keys)
+            ].copy()
 
         if pview.empty:
             st.info("No hay perfiles para esos filtros.")
         else:
-            pview["selector"] = (
-                pview["sku"].astype(str)
-                + " · "
-                + pview["description"].astype(str)
-                + " · "
-                + pview["loc"].astype(str)
-            )
+            if is_base:
+                pview["selector"] = (
+                    pview["sku"].astype(str)
+                    + " · " + pview["description"].astype(str)
+                    + " · " + pview["loc"].astype(str).str.title()
+                )
+            else:
+                pview["selector"] = (
+                    pview["sku"].astype(str)
+                    + " · " + pview["description"].astype(str)
+                )
+
             chosen = st.selectbox(
                 "Auditar SKU",
                 pview.sort_values("selector")["selector"].tolist(),
-                key="pred_sku_audit",
+                key=f"{key_prefix}_sku_audit",
             )
             row = pview[pview["selector"].eq(chosen)].iloc[0]
 
             st.markdown("**Salida total estimada por día**")
             day_cols = st.columns(6)
             for i, (name, field) in enumerate(zip(DAY_NAMES, DAY_COLS)):
-                day_cols[i].metric(
-                    name,
-                    f"{_fmt(row[field])} bultos",
-                )
+                day_cols[i].metric(name, f"{_fmt(row[field])} bultos")
 
             _render_source_breakdown(row)
-
             st.info(
                 f"Venta normal semanal: {_fmt(row.get('normal_weekly_bultos', 0))} bultos · "
                 f"Supermercados semanal: {_fmt(row.get('super_weekly_bultos', 0))} bultos · "
                 f"Salida total semanal: {_fmt(row['weekly_bultos'])} bultos · "
+                f"Salida mensual estimada: {_fmt(row.get('total_monthly_bultos', 0))} bultos · "
                 f"Días de stock dinámicos: {_fmt(row['dynamic_coverage_days'], 0)} · "
-                f"Confianza venta normal: {row['confidence']}"
+                f"Confianza de datos: {row['confidence']}"
             )
 
-    with st.expander("Cómo leer el nuevo cálculo"):
+
+def render_predictive_section(
+    products: pd.DataFrame,
+    lots: pd.DataFrame,
+    drive_url: str,
+) -> None:
+    """Frescura Predictiva v10: vista por base + vista DDV unificada."""
+    _style()
+    hist_file = _history_file()
+    super_hist_file = _supermarket_history_file()
+
+    icon_path = sales_app.PROJECT_ROOT / "mini_mentalista.png"
+    h1, h2 = st.columns([0.09, 0.91], vertical_alignment="center")
+    with h1:
+        if icon_path.exists():
+            st.image(str(icon_path), width=64)
+        else:
+            st.markdown("### 🔮")
+    with h2:
+        st.markdown("## Frescura predictiva")
+
+    st.caption(
+        "Cálculo v9: ritmo de 3 meses completos ponderados 20% / 30% / 50%, "
+        "blend 70% histórico + 30% mes actual, FEFO, máximo 2 vencimientos dentro de 120 días. "
+        "Supermercados se proyecta sólo hasta +2 meses calendario desde la fecha de cálculo; "
+        "después del corte se usa únicamente venta normal. Podés verlo por base o con Trelew + Madryn unificados."
+    )
+
+    if hist_file is None:
+        st.error("Falta `historico_frescura_bultos.csv.gz` en la raíz del repositorio.")
+        return
+    if products.empty or lots.empty:
+        st.info("No hay stock/lotes suficientes para calcular el pronóstico.")
+        return
+
+    try:
+        refresh_slot = int(time.time() // 1800)
+        customer_text, sales_text, supermarket_text = _operational_sources(drive_url, refresh_slot)
+        customer_path = Path(customer_text)
+        sales_path = Path(sales_text)
+        supermarket_path = Path(supermarket_text) if supermarket_text else None
+
+        hs = hist_file.stat()
+        history = _history(str(hist_file), hs.st_mtime_ns, hs.st_size)
+
+        wanted = tuple(sorted(
+            products["codigo"].dropna().astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .str.lstrip("0").unique()
+        ))
+
+        ss = sales_path.stat()
+        cs = customer_path.stat()
+        current = _current(
+            str(sales_path), ss.st_mtime_ns, ss.st_size,
+            str(customer_path), cs.st_mtime_ns, cs.st_size,
+            wanted,
+        )
+        normal_daily = combine_history(history, current)
+        if normal_daily.empty:
+            st.warning("No hay historial de venta normal utilizable.")
+            return
+
+        if super_hist_file is not None:
+            sh = super_hist_file.stat()
+            supermarket_history = _history(str(super_hist_file), sh.st_mtime_ns, sh.st_size)
+        else:
+            supermarket_history = pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
+
+        if supermarket_path is not None and supermarket_path.exists():
+            rs = supermarket_path.stat()
+            supermarket_live = _supermarket_current(
+                str(supermarket_path), rs.st_mtime_ns, rs.st_size, wanted
+            )
+            supermarket_daily = combine_history(supermarket_history, supermarket_live)
+        else:
+            supermarket_daily = supermarket_history
+
+        source_dates = []
+        if not current.empty:
+            source_dates.append(current["date"].max().date())
+        if not supermarket_daily.empty:
+            source_dates.append(supermarket_daily["date"].max().date())
+        if not source_dates:
+            source_dates.append(normal_daily["date"].max().date())
+        local_today = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").date()
+        as_of = min(local_today, max(source_dates))
+
+        # Vista DDV unificada: misma lógica exacta de v9.
+        normal_ddv = build_weekday_profiles(
+            normal_daily, products, as_of, recent_occurrences=2, scope="DDV"
+        )
+        super_ddv = build_supermarket_weekday_profiles(
+            supermarket_daily, products, as_of, recent_occurrences=8, scope="DDV"
+        )
+        profiles_ddv = combine_normal_and_supermarket_profiles(normal_ddv, super_ddv, as_of)
+        forecast_ddv = simulate_fefo(lots, profiles_ddv, as_of, scope="DDV")
+
+        # Vista por base: mismo cálculo v9, pero historia, stock y FEFO separados por locación.
+        normal_base = build_weekday_profiles(
+            normal_daily, products, as_of, recent_occurrences=2, scope="BASE"
+        )
+        super_base = build_supermarket_weekday_profiles(
+            supermarket_daily, products, as_of, recent_occurrences=8, scope="BASE"
+        )
+        profiles_base = combine_normal_and_supermarket_profiles(normal_base, super_base, as_of)
+        forecast_base = simulate_fefo(lots, profiles_base, as_of, scope="BASE")
+
+    except Exception as exc:
+        st.error(f"No pude calcular Frescura Predictiva: {type(exc).__name__}: {exc}")
+        with st.expander("Ver detalle técnico"):
+            st.code(traceback.format_exc())
+        return
+
+    if forecast_ddv.empty and forecast_base.empty:
+        st.info("No se generaron lotes predictivos.")
+        return
+
+    base_tab, ddv_tab = st.tabs(["Por base", "Trelew + Madryn · DDV"])
+
+    with base_tab:
+        st.caption(
+            "Vista física: Trelew y Madryn se calculan por separado. Sirve para detectar en qué base está el riesgo."
+        )
+        if forecast_base.empty:
+            st.info("No hay lotes para la vista por base.")
+        else:
+            _render_forecast_workspace(forecast_base, profiles_base, as_of, mode="BASE")
+
+    with ddv_tab:
+        st.caption(
+            "Vista consolidada: Trelew + Madryn forman un único stock por SKU y el FEFO puede absorber demanda entre bases."
+        )
+        if forecast_ddv.empty:
+            st.info("No hay lotes para la vista DDV unificada.")
+        else:
+            _render_forecast_workspace(forecast_ddv, profiles_ddv, as_of, mode="DDV")
+
+    with st.expander("Cómo leer el cálculo"):
         st.markdown(
             """
-**Bultos en riesgo:** stock que, al ritmo natural proyectado, seguiría en el lote al llegar su vencimiento.
+**Bultos en riesgo:** stock que seguiría en el lote al llegar su vencimiento.
 
-**Agotamiento estimado:** día en que ese stock se terminaría si mantuviera el ritmo actual.
+**Vista Por base:** aplica el cálculo v9 a Trelew y Madryn por separado; la demanda de una base no consume stock de la otra.
 
-**Margen vs vto.:** positivo = se agotaría antes de vencer; negativo = se agotaría después.
+**Vista DDV:** aplica exactamente el mismo cálculo v9, pero Trelew + Madryn forman un único stock por SKU y se consume el vencimiento más próximo entre ambas bases.
 
-**Incremento necesario:** cuánto debería acelerarse la salida natural para consumir el lote antes de vencer.
+**Horizonte:** máximo **2 vencimientos próximos** por SKU y sólo dentro de **120 días**.
 
-El algoritmo distribuye la salida futura usando **FEFO**: primero consume el lote con vencimiento más próximo.
+**Ritmo:** 3 meses completos previos con pesos **20% / 30% / 50%**, combinados **70% histórico + 30% ritmo del mes actual**.
 
-**Supermercados:** se suman como salida de stock, pero permanecen separados de la venta normal.
-Se excluye el CD de S.A. Importadora y Exportadora de la Patagonia identificado como cliente 999 / RUTA 25 PQUE.INDUSTRIAL.
-Los comprobantes anulados no entran y las devoluciones restan bultos.
+**Supermercados:** se proyectan como salida de stock sólo hasta **+2 meses calendario** desde la fecha de cálculo (ej.: 10/09 → 10/11). Después del corte, hasta el vencimiento, sólo se proyecta **venta normal**.
+
+Se excluye el CD de S.A. Importadora y Exportadora de la Patagonia identificado como cliente 999 / RUTA 25 PQUE.INDUSTRIAL. Los anulados no entran y las devoluciones restan bultos.
             """
         )
