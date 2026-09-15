@@ -26,6 +26,8 @@ SUPERMARKET_FORECAST_MONTHS = 2  # ventana operativa aproximada de 60 días
 WEEKS_PER_MONTH = 52.0 / 12.0
 ACTION_SPIKE_MULTIPLIER = 3.0
 ACTION_SPIKE_MIN_EXCESS_BULTOS = 100.0
+ACTION_BONIF_EXCESS_POINTS = 5.0
+ACTION_BONIF_MIN_VOLUME_MULTIPLIER = 1.5
 
 
 def _clean_text(value: object) -> str:
@@ -65,6 +67,41 @@ def _num(series: pd.Series) -> pd.Series:
     return out
 
 
+def _pct_num(series: pd.Series) -> pd.Series:
+    text = series.fillna("").astype(str).str.strip().str.replace("%", "", regex=False)
+    return _num(text)
+
+
+def _aggregate_daily(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["date", "loc", "sku", "bultos", "bonif_pct"])
+    work = frame.copy()
+    if "bonif_pct" not in work.columns:
+        work["bonif_pct"] = np.nan
+    work["bultos"] = pd.to_numeric(work["bultos"], errors="coerce").fillna(0.0)
+    work["bonif_pct"] = pd.to_numeric(work["bonif_pct"], errors="coerce")
+    work["_bonif_weight"] = np.where(
+        work["bonif_pct"].notna(),
+        work["bonif_pct"].fillna(0.0) * work["bultos"].abs(),
+        np.nan,
+    )
+    work["_bonif_base"] = np.where(work["bonif_pct"].notna(), work["bultos"].abs(), 0.0)
+    grouped = (
+        work.groupby(["date", "loc", "sku"], as_index=False)
+        .agg(
+            bultos=("bultos", "sum"),
+            _bonif_weight=("_bonif_weight", "sum"),
+            _bonif_base=("_bonif_base", "sum"),
+        )
+    )
+    grouped["bonif_pct"] = np.where(
+        grouped["_bonif_base"] > 0,
+        grouped["_bonif_weight"] / grouped["_bonif_base"],
+        np.nan,
+    )
+    return grouped.drop(columns=["_bonif_weight", "_bonif_base"])
+
+
 def parse_spanish_dates(series: pd.Series) -> pd.Series:
     x = series.fillna("").astype(str).str.lower().str.strip()
     parts = x.str.extract(r"^\s*(\d{1,2})-([a-záéíóúñ]{3})-(\d{2,4})\s*$")
@@ -85,10 +122,12 @@ def load_history_base(path: str | Path) -> pd.DataFrame:
     frame["sku"] = _code(frame["sku"])
     frame["loc"] = frame["loc"].fillna("").astype(str).str.upper().str.strip()
     frame["bultos"] = pd.to_numeric(frame["bultos"], errors="coerce").fillna(0.0)
-    return (
+    if "bonif_pct" in frame.columns:
+        frame["bonif_pct"] = pd.to_numeric(frame["bonif_pct"], errors="coerce")
+    elif "bonif" in frame.columns:
+        frame["bonif_pct"] = pd.to_numeric(frame["bonif"], errors="coerce")
+    return _aggregate_daily(
         frame[frame["date"].notna() & frame["loc"].isin(["TRELEW", "MADRYN"])]
-        .groupby(["date", "loc", "sku"], as_index=False)["bultos"]
-        .sum()
     )
 
 
@@ -119,7 +158,11 @@ def load_current_bultos(
     customer_map = load_customer_location_map(customer_xlsx)
     pieces = []
     wanted = {str(x).lstrip("0") for x in wanted_skus} if wanted_skus else None
+    header = pd.read_csv(sales_txt, sep="\t", encoding="latin1", nrows=0)
     cols = ["Descripción Período", "Cod. Cliente", "Código", "Cantidades Totales"]
+    has_bonif = "Bonific" in header.columns
+    if has_bonif:
+        cols.append("Bonific")
 
     for chunk in pd.read_csv(
         sales_txt,
@@ -140,21 +183,19 @@ def load_current_bultos(
         chunk["client"] = _code(chunk["Cod. Cliente"])
         chunk["loc"] = chunk["client"].map(customer_map)
         chunk["bultos"] = _num(chunk["Cantidades Totales"]).fillna(0.0)
+        chunk["bonif_pct"] = _pct_num(chunk["Bonific"]) if has_bonif else np.nan
         chunk = chunk[
             chunk["date"].notna() & chunk["loc"].isin(["TRELEW", "MADRYN"])
         ].copy()
         if not chunk.empty:
-            pieces.append(
-                chunk.groupby(["date", "loc", "sku"], as_index=False)["bultos"].sum()
-            )
+            pieces.append(_aggregate_daily(chunk))
 
     if not pieces:
-        return pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
+        return pd.DataFrame(columns=["date", "loc", "sku", "bultos", "bonif_pct"])
 
     return (
         pd.concat(pieces, ignore_index=True)
-        .groupby(["date", "loc", "sku"], as_index=False)["bultos"]
-        .sum()
+        .pipe(_aggregate_daily)
         .sort_values(["date", "loc", "sku"])
     )
 
@@ -175,8 +216,7 @@ def combine_history(history: pd.DataFrame, current: pd.DataFrame) -> pd.DataFram
     hist = hist[hist["_current"].isna()].drop(columns="_current")
     return (
         pd.concat([hist, current], ignore_index=True)
-        .groupby(["date", "loc", "sku"], as_index=False)["bultos"]
-        .sum()
+        .pipe(_aggregate_daily)
         .sort_values(["date", "loc", "sku"])
     )
 
@@ -287,6 +327,7 @@ def _source_monthly_profile(
 
     month_totals = []
     month_days = []
+    month_bonif = []
     eligible = []
     for period in periods:
         m_start, m_end = _month_bounds(period)
@@ -295,6 +336,11 @@ def _source_monthly_profile(
             & (sku_daily["date"].dt.date <= m_end)
         ].copy()
         total = float(m["bultos"].sum()) if not m.empty else 0.0
+        bonif_base = float(m["bultos"].abs().sum()) if (not m.empty and "bonif_pct" in m.columns) else 0.0
+        if bonif_base > 0:
+            bonif_avg = float((m["bonif_pct"].fillna(0.0) * m["bultos"].abs()).sum() / bonif_base)
+        else:
+            bonif_avg = np.nan
         by_day = np.zeros(6, dtype=float)
         if not m.empty:
             m["weekday"] = m["date"].dt.weekday
@@ -302,6 +348,7 @@ def _source_monthly_profile(
                 by_day[wd] = float(m.loc[m["weekday"] == wd, "bultos"].sum())
         month_totals.append(total)
         month_days.append(by_day)
+        month_bonif.append(bonif_avg)
         # Para SKU nuevos no castigamos meses anteriores al alta.
         eligible.append(first_positive is None or m_end >= first_positive)
 
@@ -310,18 +357,30 @@ def _source_monthly_profile(
     if hist_available:
         adjusted_month_totals = np.array(month_totals, dtype=float)
         adjusted_month_days = np.array(month_days, dtype=float)
+        monthly_bonif = np.array(month_bonif, dtype=float)
         positive_totals = adjusted_month_totals[
             eligible & (adjusted_month_totals > 0)
         ]
         spike_months = 0
         if len(positive_totals) >= 3:
             baseline = float(np.median(positive_totals))
+            bonif_values = monthly_bonif[eligible & np.isfinite(monthly_bonif)]
+            bonif_baseline = float(np.median(bonif_values)) if len(bonif_values) >= 2 else np.nan
             if baseline > 0:
-                spike_mask = (
+                volume_spike = (
                     eligible
                     & (adjusted_month_totals > baseline * ACTION_SPIKE_MULTIPLIER)
                     & ((adjusted_month_totals - baseline) >= ACTION_SPIKE_MIN_EXCESS_BULTOS)
                 )
+                bonif_spike = np.zeros(len(adjusted_month_totals), dtype=bool)
+                if np.isfinite(bonif_baseline):
+                    bonif_spike = (
+                        eligible
+                        & np.isfinite(monthly_bonif)
+                        & (monthly_bonif >= bonif_baseline + ACTION_BONIF_EXCESS_POINTS)
+                        & (adjusted_month_totals > baseline * ACTION_BONIF_MIN_VOLUME_MULTIPLIER)
+                    )
+                spike_mask = volume_spike | bonif_spike
                 spike_months = int(spike_mask.sum())
                 for idx in np.where(spike_mask)[0]:
                     original_total = adjusted_month_totals[idx]
