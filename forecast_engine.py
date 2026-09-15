@@ -24,6 +24,8 @@ FORECAST_HORIZON_DAYS = 120
 MAX_EXPIRY_BUCKETS = 2
 SUPERMARKET_FORECAST_MONTHS = 2  # ventana operativa aproximada de 60 días
 WEEKS_PER_MONTH = 52.0 / 12.0
+ACTION_SPIKE_MULTIPLIER = 3.0
+ACTION_SPIKE_MIN_EXCESS_BULTOS = 100.0
 
 
 def _clean_text(value: object) -> str:
@@ -306,14 +308,36 @@ def _source_monthly_profile(
     eligible = np.array(eligible, dtype=bool)
     hist_available = bool(eligible.any()) and first_positive is not None
     if hist_available:
+        adjusted_month_totals = np.array(month_totals, dtype=float)
+        adjusted_month_days = np.array(month_days, dtype=float)
+        positive_totals = adjusted_month_totals[
+            eligible & (adjusted_month_totals > 0)
+        ]
+        spike_months = 0
+        if len(positive_totals) >= 3:
+            baseline = float(np.median(positive_totals))
+            if baseline > 0:
+                spike_mask = (
+                    eligible
+                    & (adjusted_month_totals > baseline * ACTION_SPIKE_MULTIPLIER)
+                    & ((adjusted_month_totals - baseline) >= ACTION_SPIKE_MIN_EXCESS_BULTOS)
+                )
+                spike_months = int(spike_mask.sum())
+                for idx in np.where(spike_mask)[0]:
+                    original_total = adjusted_month_totals[idx]
+                    adjusted_month_totals[idx] = baseline
+                    if original_total > 0:
+                        adjusted_month_days[idx] = adjusted_month_days[idx] * (baseline / original_total)
+
         w = weights * eligible.astype(float)
         if w.sum() > 0:
             w = w / w.sum()
-        hist_monthly = float(np.dot(w, np.array(month_totals, dtype=float)))
-        hist_day_amounts = np.sum(np.array(month_days) * w[:, None], axis=0)
+        hist_monthly = float(np.dot(w, adjusted_month_totals))
+        hist_day_amounts = np.sum(adjusted_month_days * w[:, None], axis=0)
     else:
         hist_monthly = 0.0
         hist_day_amounts = np.zeros(6, dtype=float)
+        spike_months = 0
 
     month_start = as_period.start_time.date()
     month_end = as_period.end_time.date()
@@ -368,6 +392,7 @@ def _source_monthly_profile(
         "weekly_bultos": float(max(weekly, 0.0)),
         "monthly_bultos": float(max(final_monthly, 0.0)),
         "historical_monthly_bultos": float(max(hist_monthly, 0.0)),
+        "historical_spike_months_adjusted": int(spike_months),
         "current_month_projected_bultos": float(max(current_monthly, 0.0)),
         "current_month_actual_bultos": float(current_total),
         "elapsed_commercial_days": int(elapsed_days),
@@ -455,6 +480,7 @@ def build_weekday_profiles(
             "weekly_bultos": p["weekly_bultos"],
             "monthly_bultos": p["monthly_bultos"],
             "historical_monthly_bultos": p["historical_monthly_bultos"],
+            "historical_spike_months_adjusted": p.get("historical_spike_months_adjusted", 0),
             "current_month_projected_bultos": p["current_month_projected_bultos"],
             "current_month_actual_bultos": p["current_month_actual_bultos"],
             "avg_sale_day": p["weekly_bultos"] / 6.0,
