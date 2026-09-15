@@ -874,8 +874,6 @@ def simulate_fefo(
                 status = "ACCIONAR"
             if item["estado_operativo"] == "CRITICO":
                 status = "CRITICO"
-            elif item["estado_operativo"] == "ACCIONAR" and status == "OK":
-                status = "ACCIONAR"
 
             if risk <= 0.05:
                 lift = 0.0

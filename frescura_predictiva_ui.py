@@ -300,10 +300,16 @@ def _render_compact_predictive_table(view: pd.DataFrame, total_mode: bool = Fals
         klass = _state_class(state)
         location_html = ""
         location_text = str(row.get("ubicacion_stock", "") or "").strip()
+        operational_state = str(row.get("estado_operativo", "") or "").strip()
+        sub_parts = []
         if total_mode and location_text:
+            sub_parts.append(location_text)
+        if operational_state and operational_state != "OK":
+            sub_parts.append(f"Reporte frescura: {operational_state}")
+        if sub_parts:
             location_html = (
                 "<div class='product-sub'>"
-                + _escape(location_text)
+                + _escape(" · ".join(sub_parts))
                 + "</div>"
             )
 
@@ -326,7 +332,7 @@ def _render_compact_predictive_table(view: pd.DataFrame, total_mode: bool = Fals
             "<div>"
             f"<div class='lot-code'>Código {_escape(row.get('codigo'))}</div>"
             f"<div class='lot-title'>{_escape(row.get('descripcion'))}</div>"
-            + (f"<div class='lot-location'>{_escape(location_text)}</div>" if total_mode and location_text else "")
+            + (f"<div class='lot-location'>{_escape(' · '.join(sub_parts))}</div>" if sub_parts else "")
             + "</div>"
             f"<div class='lot-badge {klass}'>{_escape(state)}</div>"
             "</div>"
@@ -974,6 +980,8 @@ def render_predictive_section(
 **Trelew / Madryn:** cálculo independiente por base física. La demanda de una base no consume stock de la otra.
 
 **TOTAL DDV:** Trelew + Madryn se consolidan por SKU. El stock se consume por FEFO usando la demanda total de ambas bases.
+
+**Reporte frescura:** si un lote viene como **ACCIONAR**, la predicción lo muestra como referencia y lo chequea contra la venta real/proyectada. Sólo queda en riesgo si no alcanza a venderse antes del vencimiento.
 
 **Horizonte:** máximo **2 vencimientos próximos** por SKU y sólo dentro de **120 días** desde la fecha de cálculo.
 
