@@ -739,6 +739,20 @@ def simulate_fefo(
                 break
         return remaining_demand
 
+    def _operational_state(group: pd.DataFrame) -> str:
+        states = (
+            group.get("estado", pd.Series(dtype=object))
+            .fillna("")
+            .astype(str)
+            .map(_clean_text)
+        )
+        block_days = pd.to_numeric(group.get("dias_bloqueo", pd.Series(dtype=float)), errors="coerce")
+        if states.str.contains("eliminar|bloqueado", na=False).any() or block_days.fillna(99999).le(0).any():
+            return "CRITICO"
+        if states.str.contains("accionar", na=False).any():
+            return "ACCIONAR"
+        return "OK"
+
     for group_loc, sku, sku_lots in group_iter:
         if scope == "DDV":
             profile = pmap.get(str(sku).lstrip("0"))
@@ -792,6 +806,7 @@ def simulate_fefo(
                 "depletion_date": None,
                 "ubicacion_stock": location_text,
                 "lotes_origen": source_lots,
+                "estado_operativo": _operational_state(grp),
             })
 
         for item in items:
@@ -857,6 +872,10 @@ def simulate_fefo(
                 status = "CRITICO"
             else:
                 status = "ACCIONAR"
+            if item["estado_operativo"] == "CRITICO":
+                status = "CRITICO"
+            elif item["estado_operativo"] == "ACCIONAR" and status == "OK":
+                status = "ACCIONAR"
 
             if risk <= 0.05:
                 lift = 0.0
@@ -901,6 +920,7 @@ def simulate_fefo(
                 "dias_stock_dinamicos": profile.get("dynamic_coverage_days", np.nan),
                 "politica_actual_dias": profile.get("current_policy_days", np.nan),
                 "estado_predictivo": status,
+                "estado_operativo": item["estado_operativo"],
                 "regla_super_60d": True,
                 "super_hasta_fecha": pd.Timestamp(super_cutoff),
                 "modo_calculo": scope,
