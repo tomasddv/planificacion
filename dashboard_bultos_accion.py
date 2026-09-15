@@ -26,6 +26,7 @@ DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb
 EXTENSION_SHEET_NAME = "BD_EXTENSION_TOPES"
 TOPES_CANAL = {
     "K+T": 200.0,
+    "MAYORISTA": 1000.0,
     "AUTOSERVICIO": 500.0,
     "AS": 500.0,
 }
@@ -40,6 +41,9 @@ EXTENSION_ACTION_BY_CHANNEL = {
         "accion": "CORE Escala 3 AS EXCEPCION",
         "descripcion": "EXCEPCION CORE RGB/473--> AS SUR- Drop 3era escala",
     },
+}
+CANAL_ACCION_ALIAS = {
+    "AUTOSERVICIO": "AS",
 }
 SEGMENTOS_ACCION = {
     "CVZA CORE": "CORE",
@@ -251,7 +255,7 @@ def format_pct(value: float | int | None) -> str:
 
 
 def extension_action_for_channel(channel: object, field: str) -> str:
-    key = str(channel or "").strip().upper().replace("AUTOSERVICIO", "AS")
+    key = CANAL_ACCION_ALIAS.get(str(channel or "").strip().upper(), str(channel or "").strip().upper())
     return EXTENSION_ACTION_BY_CHANNEL.get(key, {}).get(field, "")
 
 
@@ -315,8 +319,14 @@ def latest_bultos_file(folder: Path | None) -> Path | None:
         if path.is_file()
         and not path.name.startswith("~$")
         and path.suffix.lower() in {".txt", ".csv"}
-        and all(term in clean_name(path.stem) for term in ("venta", "bulto"))
+        and (
+            clean_name(path.stem) == "ventadiaria"
+            or all(term in clean_name(path.stem) for term in ("venta", "bulto"))
+        )
     ]
+    daily_files = [path for path in files if clean_name(path.stem) == "ventadiaria"]
+    if daily_files:
+        return max(daily_files, key=lambda path: path.stat().st_mtime)
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
@@ -361,6 +371,16 @@ def latest_drive_item(items: list, include_terms: tuple[str, ...], suffixes: tup
     return matches[-1] if matches else None
 
 
+def latest_exact_drive_item(items: list, exact_stem: str, suffixes: tuple[str, ...]) -> object | None:
+    exact = clean_name(exact_stem)
+    matches = []
+    for item in items:
+        name = Path(str(item.path)).name
+        if Path(name).suffix.lower() in suffixes and clean_name(Path(name).stem) == exact:
+            matches.append(item)
+    return matches[-1] if matches else None
+
+
 def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path | None:
     target = sales_app.PROJECT_ROOT / ".cloud_data" / "bultos_accion"
     if target.exists() and any(target.iterdir()) and not force_refresh:
@@ -374,6 +394,7 @@ def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path |
     tmp_target.mkdir(parents=True, exist_ok=True)
 
     needed = [
+        latest_exact_drive_item(items, "ventadiaria", (".txt", ".csv")),
         latest_drive_item(items, ("venta", "bulto"), (".txt", ".csv")),
         latest_drive_item(items, ("auxiliar",), (".xlsx", ".xls")),
         latest_drive_item(items, ("cliente",), (".xlsx", ".xls", ".txt", ".csv")),
@@ -562,7 +583,7 @@ def load_enriched_data(folder: Path | None, uploaded_file, quantity_col_override
     data.loc[core_brand_override(data["marca"]), "accion"] = "CORE"
     data.loc[value_brand_override(data["marca"]), "accion"] = "VALUE"
     data = data[(data["unidad_negocio"] == "CZA") & data["accion"].isin(["CORE", "VALUE"])].copy()
-    data["canal_accion"] = data["canal"].replace({"AUTOSERVICIO": "AS"})
+    data["canal_accion"] = data["canal"].replace(CANAL_ACCION_ALIAS)
     data["tope"] = data["canal"].map(TOPES_CANAL).fillna(data["canal_accion"].map(TOPES_CANAL))
     data = data[data["tope"].notna()].copy()
     return data, source_label, quantity_options, quantity_col
@@ -625,8 +646,8 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
     for column in ["tope_CORE", "tope_VALUE"]:
         if column not in pivot.columns:
             pivot[column] = np.nan
-    pivot["tope_CORE"] = pivot["tope_CORE"].fillna(pivot["canal_accion"].map({"K+T": 200.0, "AS": 500.0}))
-    pivot["tope_VALUE"] = pivot["tope_VALUE"].fillna(pivot["canal_accion"].map({"K+T": 200.0, "AS": 500.0}))
+    pivot["tope_CORE"] = pivot["tope_CORE"].fillna(pivot["canal_accion"].map(TOPES_CANAL))
+    pivot["tope_VALUE"] = pivot["tope_VALUE"].fillna(pivot["canal_accion"].map(TOPES_CANAL))
     pivot["avance_CORE"] = np.where(pivot["tope_CORE"] > 0, pivot["CORE"] / pivot["tope_CORE"] * 100, np.nan)
     pivot["avance_VALUE"] = np.where(pivot["tope_VALUE"] > 0, pivot["VALUE"] / pivot["tope_VALUE"] * 100, np.nan)
     pivot["restante_CORE"] = pivot["tope_CORE"] - pivot["CORE"]
@@ -1243,19 +1264,19 @@ def main() -> None:
     st.sidebar.caption("Extensiones: Google Sheet")
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
 
-    uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria bultos", type=["txt", "csv"])
+    uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria", type=["txt", "csv"])
     source_path = latest_bultos_file(folder)
     if source_path is not None:
         st.sidebar.success(f"Fuente: {source_path.name}")
     elif uploaded_file is None:
         loading_placeholder.empty()
-        st.warning("No encontre archivo con nombre 'ventadiaria bultos' en la carpeta. Subilo al Drive o cargalo manualmente.")
+        st.warning("No encontre archivo con nombre 'ventadiaria' en la carpeta. Subilo al Drive o cargalo manualmente.")
         return
 
     raw, source_label = read_raw_source(source_path, uploaded_file)
     if raw.empty:
         loading_placeholder.empty()
-        st.warning("No pude leer el archivo de bultos.")
+        st.warning("No pude leer el archivo ventadiaria.")
         return
     quantity_col = choose_quantity_column(raw)
     if clean_name(quantity_col) != clean_name(TARGET_QUANTITY_COLUMN):
@@ -1268,7 +1289,7 @@ def main() -> None:
 
     if data.empty:
         loading_placeholder.empty()
-        st.warning("No hay filas Core/Value de CZA para clientes K+T o AS con el archivo seleccionado.")
+        st.warning("No hay filas Core/Value de CZA para clientes K+T, Mayorista o AS con el archivo seleccionado.")
         return
 
     filtered = apply_filters(data)
