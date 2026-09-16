@@ -319,14 +319,8 @@ def latest_bultos_file(folder: Path | None) -> Path | None:
         if path.is_file()
         and not path.name.startswith("~$")
         and path.suffix.lower() in {".txt", ".csv"}
-        and (
-            clean_name(path.stem) == "ventadiaria"
-            or all(term in clean_name(path.stem) for term in ("venta", "bulto"))
-        )
+        and all(term in clean_name(path.stem) for term in ("venta", "bulto"))
     ]
-    daily_files = [path for path in files if clean_name(path.stem) == "ventadiaria"]
-    if daily_files:
-        return max(daily_files, key=lambda path: path.stat().st_mtime)
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
@@ -371,16 +365,6 @@ def latest_drive_item(items: list, include_terms: tuple[str, ...], suffixes: tup
     return matches[-1] if matches else None
 
 
-def latest_exact_drive_item(items: list, exact_stem: str, suffixes: tuple[str, ...]) -> object | None:
-    exact = clean_name(exact_stem)
-    matches = []
-    for item in items:
-        name = Path(str(item.path)).name
-        if Path(name).suffix.lower() in suffixes and clean_name(Path(name).stem) == exact:
-            matches.append(item)
-    return matches[-1] if matches else None
-
-
 def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path | None:
     target = sales_app.PROJECT_ROOT / ".cloud_data" / "bultos_accion"
     if target.exists() and any(target.iterdir()) and not force_refresh:
@@ -394,7 +378,6 @@ def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path |
     tmp_target.mkdir(parents=True, exist_ok=True)
 
     needed = [
-        latest_exact_drive_item(items, "ventadiaria", (".txt", ".csv")),
         latest_drive_item(items, ("venta", "bulto"), (".txt", ".csv")),
         latest_drive_item(items, ("auxiliar",), (".xlsx", ".xls")),
         latest_drive_item(items, ("cliente",), (".xlsx", ".xls", ".txt", ".csv")),
@@ -1264,19 +1247,19 @@ def main() -> None:
     st.sidebar.caption("Extensiones: Google Sheet")
     st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
 
-    uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria", type=["txt", "csv"])
+    uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria bultos", type=["txt", "csv"])
     source_path = latest_bultos_file(folder)
     if source_path is not None:
         st.sidebar.success(f"Fuente: {source_path.name}")
     elif uploaded_file is None:
         loading_placeholder.empty()
-        st.warning("No encontre archivo con nombre 'ventadiaria' en la carpeta. Subilo al Drive o cargalo manualmente.")
+        st.warning("No encontre archivo con nombre 'ventadiaria bultos' en la carpeta. Subilo al Drive o cargalo manualmente.")
         return
 
     raw, source_label = read_raw_source(source_path, uploaded_file)
     if raw.empty:
         loading_placeholder.empty()
-        st.warning("No pude leer el archivo ventadiaria.")
+        st.warning("No pude leer el archivo ventadiaria bultos.")
         return
     quantity_col = choose_quantity_column(raw)
     if clean_name(quantity_col) != clean_name(TARGET_QUANTITY_COLUMN):
