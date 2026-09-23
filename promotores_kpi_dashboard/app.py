@@ -35,9 +35,9 @@ DEFAULT_DRIVE_FILE_IDS = {
     "20260519122321plantillaClientesAR.xlsx": "1GuRrGKlb7SLjI9h81XssZTpWzgPUrpRb",
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
-    "reporte de clientes.xlsx": "1ZR9WOeqpaq9t-mJZM4f9AlUV7BIrKVo-",
+    "reporte de clientes.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
-    "ventadiaria.txt": "12c7hy-bTbg7P_1QYUyKKcooNLo4iog1x",
+    "ventadiaria.txt": "1oXbLFkhG2hq5udeFCkzOUPwG4JTTu1RP",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
@@ -254,7 +254,7 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
 
     cache_root = PROJECT_ROOT / ".cloud_data"
     target = cache_root / "promotores"
-    if target.exists() and any(target.rglob("*")) and not force_refresh:
+    if target.exists() and has_required_dashboard_files(target) and not force_refresh:
         return target, "Drive cache"
 
     try:
@@ -1600,7 +1600,7 @@ route_options = ["Todas"] + route_groups
 
 view = st.radio(
     "Vista",
-    ["Acumulado mensual", "Acumulado promotores", "Planificación diaria", "No compradores", "No compradores SKU", "Gestión CNC"],
+    ["Acumulado mensual", "Acumulado promotores", "Planificación diaria", "No compradores", "No compradores SKU", "Clientes con compra", "Gestión CNC"],
     horizontal=True,
     label_visibility="collapsed",
     key="main_view",
@@ -2139,7 +2139,7 @@ if view == "No compradores":
         )
     st.dataframe(nb_view, use_container_width=True, hide_index=True)
 
-if view == "No compradores SKU":
+if view in ("No compradores SKU", "Clientes con compra"):
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
     sku_cols = st.columns([1.25, 1.25, 1.0, 1.15, 1.25, 1.05, 1.15, 1.7, 1.45])
     with sku_cols[0]:
@@ -2241,7 +2241,9 @@ if view == "No compradores SKU":
         if not sku_products_filter:
             sku_products_filter = ["Todos"]
     with sku_cols[8]:
-        if sku_products_filter == ["Todos"]:
+        if view == "Clientes con compra":
+            st.caption("Clientes que compraron el negocio/SKU en el período seleccionado.")
+        elif sku_products_filter == ["Todos"]:
             st.caption("Clientes de la ruta que no compraron el negocio/SKU en el período seleccionado.")
         else:
             st.caption(f"Clientes de la ruta que no compraron ninguno de los {len(sku_products_filter)} SKUs seleccionados.")
@@ -2249,6 +2251,13 @@ if view == "No compradores SKU":
     sku_rutas_base = apply_supervisor_filter(rutas_grupo, sku_supervisor)
     sku_rutas_base = apply_promoter_filter(sku_rutas_base, sku_promoter)
     sku_rutas_base = apply_license_selection(sku_rutas_base, sku_license)
+    sku_all_sales = filter_business_sku_purchase_range(
+        sku_sales_source,
+        sku_start,
+        sku_end,
+        sku_business,
+        sku_products_filter,
+    )
     sku_filtered = filter_business_sku_purchase_range(
         sku_sales_source,
         sku_start,
@@ -2260,17 +2269,93 @@ if view == "No compradores SKU":
     )
     sku_filtered = apply_supervisor_filter(sku_filtered, sku_supervisor)
     sku_filtered = apply_promoter_filter(sku_filtered, sku_promoter)
+    if view == "Clientes con compra":
+        show_all_buyers = (
+            sku_route == "Todas"
+            and sku_supervisor == "Todos"
+            and sku_promoter == "Todos"
+            and sku_license == "Todas"
+        )
+        buyer_sales = sku_all_sales if show_all_buyers else sku_filtered
+        st.subheader("Clientes con compra por negocio / SKU")
+        st.caption(sku_label)
+        buyer_metrics = st.columns(3 if show_all_buyers else 2)
+        buyer_metrics[0].metric("Clientes con compra", f"{buyer_sales['cliente'].nunique():,}")
+        buyer_metrics[1].metric("Compraron en ruta", f"{sku_filtered['cliente'].nunique():,}")
+        if show_all_buyers:
+            buyer_metrics[2].metric(
+                "Fuera de cartera", f"{buyer_sales.loc[~buyer_sales['cliente'].isin(sku_rutas_base['cliente']), 'cliente'].nunique():,}"
+            )
+
+        if buyer_sales.empty:
+            st.info("No hay clientes con compra para los filtros seleccionados.")
+        else:
+            buyer_detail = buyer_sales.groupby("cliente", as_index=False).agg(
+                **{
+                    "Razón Social": ("cliente_nombre", "first"),
+                    "Primera compra": ("fecha", "min"),
+                    "Última compra": ("fecha", "max"),
+                    "Artículos comprados": (
+                        "articulo_descripcion",
+                        lambda values: " | ".join(sorted({str(value).strip() for value in values if pd.notna(value) and str(value).strip()})),
+                    ),
+                }
+            )
+            buyer_route_scope = sku_rutas_base
+            if sku_route != "Todas":
+                buyer_route_scope = buyer_route_scope[buyer_route_scope["grupo_ruta"].eq(sku_route)]
+            buyer_route_detail = buyer_route_scope.groupby("cliente", as_index=False).agg(
+                **{
+                    "Grupo": ("grupo_ruta", lambda values: ", ".join(sorted(set(values.dropna().astype(str))))),
+                    "Ruta": ("ruta", lambda values: ", ".join(sorted(set(values.dropna().astype(str))))),
+                    "Supervisor": ("supervisor", lambda values: ", ".join(sorted(set(values.dropna().astype(str))))),
+                    "Promotor": ("promotor", lambda values: ", ".join(sorted(set(values.dropna().astype(str))))),
+                    "Nombre Fantasía": ("nombre_fantasia", "first"),
+                }
+            )
+            buyer_detail = buyer_detail.merge(buyer_route_detail, on="cliente", how="left")
+            buyer_detail["Cartera"] = buyer_detail["Grupo"].notna().map({True: "En ruta", False: "Fuera de cartera"})
+            buyer_detail["Nombre Fantasía"] = buyer_detail["Nombre Fantasía"].fillna("")
+            buyer_detail["Nombre Fantasía"] = buyer_detail["Nombre Fantasía"].where(
+                buyer_detail["Nombre Fantasía"].ne(""), buyer_detail["Razón Social"]
+            )
+            buyer_detail = buyer_detail.rename(columns={"cliente": "Cliente"}).sort_values("Cliente")
+            buyer_detail = buyer_detail[
+                ["Cliente", "Razón Social", "Nombre Fantasía", "Cartera", "Grupo", "Ruta", "Supervisor", "Promotor", "Primera compra", "Última compra", "Artículos comprados"]
+            ]
+            st.dataframe(buyer_detail, use_container_width=True, hide_index=True)
+        st.stop()
     sku_table = non_buyer_clients(sku_filtered, sku_rutas_base, sku_route)
     sku_last_activations, sku_last_activation_date = last_day_client_activations(sku_filtered, sku_end)
 
     st.subheader("Clientes no compradores por negocio / SKU")
     st.caption(sku_label)
-    sku_metric_cols = st.columns(4)
+    show_sales_total = sku_route == "Todas" and sku_supervisor == "Todos" and sku_promoter == "Todos" and sku_license == "Todas"
+    sku_metric_cols = st.columns(5 if show_sales_total else 4)
     sku_metric_cols[0].metric("Clientes en ruta", f"{route_customer_count(sku_rutas_base, sku_route):,}")
-    sku_metric_cols[1].metric("Clientes con compra", f"{sku_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
-    sku_metric_cols[2].metric("No compradores", f"{len(sku_table):,}")
+    if show_sales_total:
+        sku_metric_cols[1].metric("Compraron (venta total)", f"{sku_all_sales['cliente'].nunique():,}")
+        route_metric_index = 2
+    else:
+        route_metric_index = 1
+    sku_metric_cols[route_metric_index].metric("Compraron en ruta", f"{sku_filtered[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}")
+    sku_non_buyers = sku_table[["vendedor", "cliente"]].drop_duplicates().shape[0]
+    sku_metric_cols[route_metric_index + 1].metric("No compradores en ruta", f"{sku_non_buyers:,}")
     last_day_label = sku_last_activation_date.date().isoformat() if sku_last_activation_date is not None else "-"
-    sku_metric_cols[3].metric("Activados último día", f"{sku_last_activations[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}", last_day_label)
+    sku_metric_cols[route_metric_index + 2].metric("Activados último día", f"{sku_last_activations[['vendedor', 'cliente']].drop_duplicates().shape[0]:,}", last_day_label)
+
+    if show_sales_total:
+        outside_route = sku_all_sales.loc[
+            ~sku_all_sales["cliente"].isin(sku_rutas_base["cliente"]),
+            ["cliente", "cliente_nombre"],
+        ].drop_duplicates("cliente").sort_values("cliente")
+        if not outside_route.empty:
+            with st.expander(f"Compraron fuera de la cartera: {len(outside_route)}"):
+                st.dataframe(
+                    outside_route.rename(columns={"cliente": "Cliente", "cliente_nombre": "Razón Social"}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     sku_view = sku_table.rename(
         columns={
