@@ -23,6 +23,7 @@ from dashboard_data import (
     load_auxiliares,
     load_dataset,
     load_ventas,
+    only_new_client_activations_range,
     only_new_sku_activations_range,
     summarize,
     trend_by_focus,
@@ -469,6 +470,21 @@ def resolve_closed_month_sales_files(force_refresh: bool = False):
 
 def kpi_options():
     return [f"{focus} CCC" for focus in KPI_FOCUSES]
+
+
+def daily_card_sales(ventas_df, start_date, end_date, option, rutas_base, route, lookback_start=None):
+    if option in kpi_options():
+        focus, _ = parse_kpi_option(option)
+        if lookback_start is not None:
+            return filter_client_activations_by_focus_range(
+                ventas_df, start_date, end_date, focus, rutas_base, route, lookback_start=lookback_start
+            )
+        return filter_sales_by_focus_purchase_range(ventas_df, start_date, end_date, focus, rutas_base, route)
+
+    selected_sales = filter_business_sku_purchase_range(ventas_df, start_date if lookback_start is None else lookback_start, end_date, "Todos", [option])
+    if lookback_start is not None:
+        selected_sales = only_new_client_activations_range(selected_sales, start_date, end_date, lookback_start)
+    return apply_route_scope_by_client(selected_sales, rutas_base, route)
 
 
 def parse_kpi_option(option: str):
@@ -1785,6 +1801,9 @@ if view == "Acumulado promotores":
 
 if view == "Planificación diaria":
     supervisor_options = ["Todos"] + sorted(promotores["supervisor"].dropna().unique())
+    day_card_options = options + [
+        option for option in sku_options_for_business(ventas, "Todos") if option != "Todos" and option not in options
+    ]
     control_cols = st.columns([1, 1.1, 1.3, 1.4, 1.5, 1.5, 1.6])
     with control_cols[0]:
         min_plan_date, default_plan_date, max_plan_date = planning_date_bounds(fechas)
@@ -1809,11 +1828,11 @@ if view == "Planificación diaria":
         day_promoter_options = promoter_options_for(promotores, day_supervisor)
         day_promoter = st.selectbox("Promotor", day_promoter_options, index=0, key="day_promoter")
     with control_cols[4]:
-        card_1_option = st.selectbox("Tarjeta 1", options, index=0)
+        card_1_option = st.selectbox("Tarjeta 1", day_card_options, index=0)
     with control_cols[5]:
-        card_2_option = st.selectbox("Tarjeta 2", options, index=1)
+        card_2_option = st.selectbox("Tarjeta 2", day_card_options, index=1)
     with control_cols[6]:
-        st.caption("Real = activaciones nuevas del día. El cumplimiento usa planificado; si está en 0, usa clientes ruta.")
+        st.caption("Real = activaciones nuevas del día. El cumplimiento usa el planificado cargado.")
 
     day_date = pd.Timestamp(fecha)
     plan_period = str(fecha)
@@ -1828,21 +1847,21 @@ if view == "Planificación diaria":
         real_date = latest_sales_date_for_route(ventas, day_date, day_rutas_base, route)
     accumulated_start = real_date.replace(day=1)
     prior_accumulated_end = real_date - pd.Timedelta(days=1)
-    filtered_1 = filter_client_activations_by_focus_range(
-        ventas, real_date, real_date, focus_1, day_rutas_base, route, lookback_start=accumulated_start
+    filtered_1 = daily_card_sales(
+        ventas, real_date, real_date, card_1_option, day_rutas_base, route, lookback_start=accumulated_start
     )
     filtered_1 = apply_promoter_filter(filtered_1, day_promoter)
     summary_1 = summarize(filtered_1, day_rutas_base, day_promotores, real_date, route)
-    filtered_1_prior = filter_sales_by_focus_purchase_range(ventas, accumulated_start, prior_accumulated_end, focus_1, day_rutas_base, route)
+    filtered_1_prior = daily_card_sales(ventas, accumulated_start, prior_accumulated_end, card_1_option, day_rutas_base, route)
     filtered_1_prior = apply_promoter_filter(filtered_1_prior, day_promoter)
     summary_1_prior = summarize(filtered_1_prior, day_rutas_base, day_promotores, real_date, route)
     summary_1 = apply_remaining_before_day(summary_1, summary_1_prior)
-    filtered_2 = filter_client_activations_by_focus_range(
-        ventas, real_date, real_date, focus_2, day_rutas_base, route, lookback_start=accumulated_start
+    filtered_2 = daily_card_sales(
+        ventas, real_date, real_date, card_2_option, day_rutas_base, route, lookback_start=accumulated_start
     )
     filtered_2 = apply_promoter_filter(filtered_2, day_promoter)
     summary_2 = summarize(filtered_2, day_rutas_base, day_promotores, real_date, route)
-    filtered_2_prior = filter_sales_by_focus_purchase_range(ventas, accumulated_start, prior_accumulated_end, focus_2, day_rutas_base, route)
+    filtered_2_prior = daily_card_sales(ventas, accumulated_start, prior_accumulated_end, card_2_option, day_rutas_base, route)
     filtered_2_prior = apply_promoter_filter(filtered_2_prior, day_promoter)
     summary_2_prior = summarize(filtered_2_prior, day_rutas_base, day_promotores, real_date, route)
     summary_2 = apply_remaining_before_day(summary_2, summary_2_prior)
@@ -1910,12 +1929,20 @@ if view == "Planificación diaria":
     summary = summary_1
     trend_source = apply_supervisor_filter(ventas, day_supervisor)
     trend_source = apply_promoter_filter(trend_source, day_promoter)
-    trend_df = trend_by_focus(trend_source, focus, day_rutas_base, route)
+    if card_1_option in options:
+        trend_df = trend_by_focus(trend_source, focus, day_rutas_base, route)
+    else:
+        trend_sales = filter_business_sku_purchase_range(
+            trend_source, accumulated_start, real_date, "Todos", [card_1_option], day_rutas_base, route
+        )
+        first_purchases = trend_sales.sort_values("fecha").drop_duplicates("cliente", keep="first")
+        trend_df = first_purchases.groupby("fecha", as_index=False).agg(clientes_compra=("cliente", "nunique"))
+        trend_df["brand_distribution"] = trend_df["clientes_compra"]
 
     left, right = st.columns([1.35, 1])
     with left:
         st.subheader("Promotores")
-        view = summary[
+        promoter_view = summary[
             [
                 "promotor",
                 "supervisor",
@@ -1941,7 +1968,7 @@ if view == "Planificación diaria":
             }
         )
         st.dataframe(
-            view.style.format(
+            promoter_view.style.format(
                 {
                     "% Compra": "{:.1%}",
                     "BD / Cliente Ruta": "{:.2f}",
@@ -1962,6 +1989,8 @@ if view == "Planificación diaria":
             .rename(columns={"promotor": "Promotor", "clientes_compra": "CCC", "brand_distribution": "TBD"})
             .set_index("Promotor")
         )
+        if card_1_option not in options:
+            ranking = ranking[["CCC"]]
         st.bar_chart(ranking, height=310)
 
         st.subheader("Evolucion diaria")
@@ -1970,6 +1999,8 @@ if view == "Planificación diaria":
         )
         if not trend_view.empty:
             trend_view["Fecha"] = pd.to_datetime(trend_view["Fecha"]).dt.date
+            if card_1_option not in options:
+                trend_view = trend_view[["Fecha", "CCC"]]
             st.line_chart(trend_view.set_index("Fecha"), height=260)
 
     st.subheader("Detalle de ventas en ruta")
