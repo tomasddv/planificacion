@@ -364,6 +364,7 @@ def load_ventas(path: Path, brand_map: pd.DataFrame, mix_map: pd.DataFrame, cali
             "ruta": venta["Ruta"].map(clean_code),
             "cliente": venta["Cod. Cliente"].map(clean_code),
             "cliente_nombre": venta["Descripción"].map(clean_text),
+            "articulo_codigo": venta["Código"].map(clean_code),
             "articulo_descripcion": venta["Descripción.2"].map(clean_text),
             "marca": venta["Descripción.3"].map(clean_text),
             "calibre": venta["Descripción.4"].map(clean_text),
@@ -390,6 +391,7 @@ def load_ventas(path: Path, brand_map: pd.DataFrame, mix_map: pd.DataFrame, cali
     df[["ung_top", "calibres_cpr"]] = df[["ung_top", "calibres_cpr"]].fillna("")
     search_cols = ["articulo_descripcion", "marca", "marca_unificada", "producto", "calibre", "calibre_unificado"]
     df["sku_search_text"] = df[search_cols].fillna("").agg(" ".join, axis=1).str.upper()
+    df.loc[df["articulo_codigo"].eq("900463"), "sku_search_text"] += " PURE GOLD 330 PORRON"
     return df
 
 
@@ -551,7 +553,7 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     filtered = ventas.copy()
     marca = brand_upper(filtered)
     search_text = filtered.get("sku_search_text", pd.Series("", index=filtered.index)).fillna("").str.upper()
-    cza = filtered["division"].eq("CERVEZAS")
+    cza = filtered["division"].isin(["CERVEZAS", "POP"])
     combo = search_text.str.contains(r"\bCOMBO\b|\bPROMO\b", regex=True, na=False)
     beer_combo = combo & search_text.str.contains(
         r"LATON|LATONES|\b710\b|L710|SA 710|LATA|LATAS|CERVEZA|PATAGONIA|\bPAT\b|"
