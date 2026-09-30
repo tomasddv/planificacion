@@ -1,6 +1,7 @@
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -48,6 +49,7 @@ DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/15ITRhsY5mvK3NSHeOKV2MymC078pT9TPAwKUdZDfjnI/edit?usp=sharing"
 DEFAULT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwDlxEbBN2kmy5oVtb4LJiPFN0KtAZw-nI9TolDtfOIVuMxQqIZprMB1pquTesPGYHe/exec"
 PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_PARSER_SIGNATURE = hashlib.sha256((PROJECT_ROOT / "dashboard_data.py").read_bytes()).hexdigest()
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 COMBO_OPTION_PREFIX = "COMBO/PROMO: "
@@ -132,7 +134,7 @@ def cached_load_dataset(base_dir: str, signature: tuple):
 
 
 @st.cache_data(show_spinner=False)
-def cached_load_historical_sales(sales_paths: tuple[str, ...], aux_path: str, signature: tuple):
+def cached_load_historical_sales(sales_paths: tuple[str, ...], aux_path: str, signature: tuple, parser_signature: str):
     brand_map, mix_map, caliber_map = load_auxiliares(Path(aux_path))
     frames = [load_ventas(Path(path), brand_map, mix_map, caliber_map) for path in sales_paths]
     if not frames:
@@ -145,13 +147,13 @@ def file_signature(base_dir: str):
     base = Path(base_dir)
     signature = []
     if not base.exists():
-        return (str(base), None)
+        return (str(base), None, DATA_PARSER_SIGNATURE)
     suffixes = {".xlsx", ".xls", ".txt", ".csv"}
     for path in sorted(p for p in base.rglob("*") if p.is_file() and p.suffix.lower() in suffixes):
         name = path.name.upper()
         if any(term in name for term in ["RUTAS", "AUXILIARES", "VENTA", "PLANTILLACLIENTESAR"]):
             signature.append((str(path), path.stat().st_mtime, path.stat().st_size))
-    return tuple(signature)
+    return tuple(signature) + (DATA_PARSER_SIGNATURE,)
 
 
 def secret_or_env(name: str, default: str = ""):
@@ -1524,6 +1526,7 @@ def period_controls(prefix: str, fechas_venta: list, aux_path: str):
                 str(aux_path),
                 Path(aux_path).stat().st_mtime,
             ),
+            DATA_PARSER_SIGNATURE,
         )
         current_month = pd.Timestamp(max(fechas_venta)).to_period("M")
         closed_months = sorted(
@@ -2074,6 +2077,7 @@ if view == "No compradores":
                     str(dataset["sources"]["auxiliares"]),
                     Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
                 ),
+                DATA_PARSER_SIGNATURE,
             )
             current_month = pd.Timestamp(max(fechas)).to_period("M")
             closed_months = sorted(
@@ -2207,6 +2211,7 @@ if view in ("No compradores SKU", "Clientes con compra"):
                     str(dataset["sources"]["auxiliares"]),
                     Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
                 ),
+                DATA_PARSER_SIGNATURE,
             )
             current_month = pd.Timestamp(max(fechas)).to_period("M")
             sku_closed_months = sorted(
@@ -2533,6 +2538,7 @@ if view == "Gestión CNC":
                 str(dataset["sources"]["auxiliares"]),
                 Path(dataset["sources"]["auxiliares"]).stat().st_mtime,
             ),
+            DATA_PARSER_SIGNATURE,
         )
         cnc_history = pd.concat([cnc_historical, ventas], ignore_index=True).drop_duplicates()
     else:
