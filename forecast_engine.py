@@ -28,6 +28,7 @@ ACTION_SPIKE_MULTIPLIER = 3.0
 ACTION_SPIKE_MIN_EXCESS_BULTOS = 100.0
 ACTION_BONIF_EXCESS_POINTS = 5.0
 ACTION_BONIF_MIN_VOLUME_MULTIPLIER = 1.5
+BASE_PROFILE_FALLBACK_SKUS = {"32511"}
 
 
 def _clean_text(value: object) -> str:
@@ -313,7 +314,41 @@ def _source_monthly_profile(
         if loc is not None:
             x["loc"] = x["loc"].fillna("").astype(str).str.upper().str.strip()
             mask &= x["loc"].eq(str(loc).upper().strip())
-        sku_daily = x.loc[mask].groupby("date", as_index=False)["bultos"].sum()
+        selected = x.loc[mask].copy()
+        if selected.empty:
+            sku_daily = pd.DataFrame({
+                "date": pd.Series(dtype="datetime64[ns]"),
+                "bultos": pd.Series(dtype="float64"),
+                "bonif_pct": pd.Series(dtype="float64"),
+            })
+        else:
+            if "bonif_pct" not in selected.columns:
+                selected["bonif_pct"] = np.nan
+            selected["bonif_pct"] = pd.to_numeric(selected["bonif_pct"], errors="coerce")
+            selected["_bonif_weight"] = np.where(
+                selected["bonif_pct"].notna(),
+                selected["bonif_pct"].fillna(0.0) * selected["bultos"].abs(),
+                0.0,
+            )
+            selected["_bonif_base"] = np.where(
+                selected["bonif_pct"].notna(),
+                selected["bultos"].abs(),
+                0.0,
+            )
+            sku_daily = (
+                selected.groupby("date", as_index=False)
+                .agg(
+                    bultos=("bultos", "sum"),
+                    _bonif_weight=("_bonif_weight", "sum"),
+                    _bonif_base=("_bonif_base", "sum"),
+                )
+            )
+            sku_daily["bonif_pct"] = np.where(
+                sku_daily["_bonif_base"] > 0,
+                sku_daily["_bonif_weight"] / sku_daily["_bonif_base"],
+                np.nan,
+            )
+            sku_daily = sku_daily.drop(columns=["_bonif_weight", "_bonif_base"])
 
     as_period = pd.Period(as_of, freq="M")
     periods = [as_period - 3, as_period - 2, as_period - 1]
@@ -485,11 +520,18 @@ def _index_daily_groups(daily: pd.DataFrame, scope: str) -> dict:
     """
     if daily.empty:
         return {}
-    x = daily[["date", "loc", "sku", "bultos"]].copy()
+    cols = ["date", "loc", "sku", "bultos"]
+    if "bonif_pct" in daily.columns:
+        cols.append("bonif_pct")
+    x = daily[cols].copy()
     x["date"] = pd.to_datetime(x["date"], errors="coerce")
     x["sku"] = _code(x["sku"])
     x["loc"] = x["loc"].fillna("").astype(str).str.upper().str.strip()
     x["bultos"] = pd.to_numeric(x["bultos"], errors="coerce").fillna(0.0)
+    if "bonif_pct" not in x.columns:
+        x["bonif_pct"] = np.nan
+    else:
+        x["bonif_pct"] = pd.to_numeric(x["bonif_pct"], errors="coerce")
     x = x[x["date"].notna() & x["loc"].isin(["TRELEW", "MADRYN"])].copy()
     if x.empty:
         return {}
@@ -510,6 +552,7 @@ def build_weekday_profiles(
     scope = str(scope).upper().strip()
     scoped_products = _products_ddv(products) if scope == "DDV" else _products_by_base(products)
     grouped_daily = _index_daily_groups(daily, scope)
+    grouped_ddv_daily = _index_daily_groups(daily, "DDV") if scope == "BASE" else {}
     empty_daily = pd.DataFrame(columns=["date", "loc", "sku", "bultos"])
     rows = []
     for row in scoped_products.to_dict("records"):
@@ -524,6 +567,26 @@ def build_weekday_profiles(
             fallback_daily=row.get("venta_promedio", 0.0),
             loc=None,
         )
+        if scope == "BASE" and str(row["sku"]) in BASE_PROFILE_FALLBACK_SKUS:
+            observed_local = (
+                float(p.get("current_month_actual_bultos", 0.0)) > 0
+                or float(p.get("historical_monthly_bultos", 0.0)) > 0
+            )
+            if not observed_local:
+                ddv_slice = grouped_ddv_daily.get(str(row["sku"]), empty_daily)
+                ddv_profile = _source_monthly_profile(
+                    daily=ddv_slice,
+                    sku=row["sku"],
+                    as_of=as_of,
+                    fallback_daily=0.0,
+                    loc=None,
+                )
+                observed_ddv = (
+                    float(ddv_profile.get("current_month_actual_bultos", 0.0)) > 0
+                    or float(ddv_profile.get("historical_monthly_bultos", 0.0)) > 0
+                )
+                if observed_ddv:
+                    p = ddv_profile
         depletion = estimate_depletion_date(row["stock_total"], p, as_of)
         age_weeks = (
             (as_of - p["history_start"]).days / 7.0 if p.get("history_start") else 0.0
