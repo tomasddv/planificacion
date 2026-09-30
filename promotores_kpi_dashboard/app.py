@@ -51,6 +51,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 PLAN_FILE = Path("planificacion_promotores.csv")
 PLANIFICADOR_PROMOTORES_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 COMBO_OPTION_PREFIX = "COMBO/PROMO: "
+DRIVE_CACHE_MAX_AGE_SECONDS = 60 * 60
 
 
 def cliente_sku_key(df: pd.DataFrame):
@@ -256,7 +257,8 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
     cache_root = PROJECT_ROOT / ".cloud_data"
     target = cache_root / "promotores"
     if target.exists() and has_required_dashboard_files(target) and not force_refresh:
-        return target, "Drive cache"
+        if time.time() - target.stat().st_mtime < DRIVE_CACHE_MAX_AGE_SECONDS:
+            return target, "Drive cache"
 
     try:
         import gdown
