@@ -553,7 +553,7 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     filtered = ventas.copy()
     marca = brand_upper(filtered)
     search_text = filtered.get("sku_search_text", pd.Series("", index=filtered.index)).fillna("").str.upper()
-    cza = filtered["division"].isin(["CERVEZAS", "POP"])
+    cza = filtered["division"].eq("CERVEZAS")
     combo = search_text.str.contains(r"\bCOMBO\b|\bPROMO\b", regex=True, na=False)
     beer_combo = combo & search_text.str.contains(
         r"LATON|LATONES|\b710\b|L710|SA 710|LATA|LATAS|CERVEZA|PATAGONIA|\bPAT\b|"
