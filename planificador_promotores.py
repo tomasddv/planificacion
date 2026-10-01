@@ -145,35 +145,77 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         return None
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or str(secret_or_env("FORCE_GDRIVE_REFRESH", "false")).lower() in {"1", "true", "si", "sí", "yes"}
-    if target.exists() and any(target.iterdir()) and not refresh:
+    if sales_app.has_sales_files(target) and not refresh:
         return target
     try:
         import gdown
     except ImportError:
-        return target if target.exists() else None
+        return target if sales_app.has_sales_files(target) else None
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    download_target = target
-    if refresh:
-        download_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp_{int(time.time())}"
-        if download_target.exists():
-            shutil.rmtree(download_target, ignore_errors=True)
+    download_target = PROJECT_ROOT / ".cloud_data" / f"{folder_name}_tmp_{int(time.time())}"
+    if download_target.exists():
+        shutil.rmtree(download_target, ignore_errors=True)
     download_target.mkdir(parents=True, exist_ok=True)
 
-    try:
-        gdown.download_folder(url=url, output=str(download_target), quiet=True, use_cookies=False)
-    except Exception:
-        return target if target.exists() and any(target.iterdir()) else None
+    downloaded_ids: set[str] = set()
 
-    if refresh and download_target.exists() and any(download_target.iterdir()):
+    def wanted_drive_file(name: str) -> bool:
+        normalized = sales_app.normalized_drive_filename(Path(str(name)).name)
+        compact = normalized.replace(" ", "")
+        return (
+            ("VENTA" in normalized and "BULTOS" not in normalized)
+            or ("VENTADIARIA" in compact)
+            or ("BULTOS" in normalized)
+            or ("OBJETIVOS" in normalized)
+            or ("PLANIFICACION" in normalized)
+            or ("CLIENTES" in normalized)
+            or ("AUXILIARES" in normalized)
+            or ("RUTAS" in normalized)
+            or ("FRESCURA" in normalized)
+            or ("SEMAFORO" in normalized)
+            or ("SEMÁFORO" in normalized)
+        )
+
+    def download_by_id(file_id: str, output: Path) -> None:
+        if not file_id or file_id in downloaded_ids:
+            return
+        try:
+            gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
+            if output.exists() and output.stat().st_size > 0:
+                downloaded_ids.add(file_id)
+        except Exception:
+            pass
+
+    try:
+        if sales_app.google_drive_folder_id(url) == sales_app.google_drive_folder_id(sales_app.DEFAULT_DRIVE_URL):
+            for local_name, file_id in sales_app.DEFAULT_DRIVE_FILE_IDS.items():
+                download_by_id(file_id, download_target / local_name)
+
+        drive_files = gdown.download_folder(
+            url=url,
+            output=str(download_target),
+            quiet=True,
+            use_cookies=False,
+            skip_download=True,
+        )
+        for file in drive_files or []:
+            local_name = Path(str(file.path)).name
+            if wanted_drive_file(local_name):
+                download_by_id(file.id, download_target / local_name)
+    except Exception:
+        pass
+
+    if sales_app.has_sales_files(download_target):
         try:
             if target.exists():
-                shutil.rmtree(target)
+                shutil.rmtree(target, ignore_errors=True)
             download_target.rename(target)
             return target
         except Exception:
             return download_target
-    return target
+    shutil.rmtree(download_target, ignore_errors=True)
+    return target if sales_app.has_sales_files(target) else None
 
 
 def latest_objectives_file(folder: Path | None) -> Path | None:
