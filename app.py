@@ -103,6 +103,7 @@ NORMALIZATION_VERSION = 4
 CUSTOMER_CHANNEL_VERSION = 2
 SEGMENT_VERSION = 1
 COMBO_HL_FILE_NAME = "combo_hectolitros.csv"
+COMBO_REVIEW_FILE_NAME = "combos_pendientes_revision.csv"
 CANAL_ORDER = ["K+T", "AUTOSERVICIO", "MAYORISTA", "REF", "NO"]
 DIVISION_REPORT_ORDER = [
     "TOTAL CVZA",
@@ -1011,6 +1012,84 @@ def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
     result.loc[can_correct & empty_business & has_unit, "unidad_negocio"] = combo_unit.loc[can_correct & empty_business & has_unit]
     result = result.drop(columns=["articulo_key"], errors="ignore")
     return result
+
+
+def combo_catalog_gaps(sales: pd.DataFrame) -> pd.DataFrame:
+    combos = load_combo_hl_table_from_project()
+    required = {"fecha", "articulo_codigo", "articulo_descripcion", "precio_neto", "importe_neto", "hl"}
+    if sales.empty or not required.issubset(sales.columns):
+        return pd.DataFrame()
+
+    data = sales.copy()
+    data["articulo_codigo"] = data["articulo_codigo"].fillna("").astype(str).str.extract(r"(\d+)", expand=False).fillna("")
+    data["articulo_key"] = data["articulo_descripcion"].fillna("").astype(str).map(clean_name)
+    data["hl"] = pd.to_numeric(data["hl"], errors="coerce").fillna(0.0)
+    data["precio_neto"] = pd.to_numeric(data["precio_neto"], errors="coerce").fillna(0.0)
+    data["importe_neto"] = pd.to_numeric(data["importe_neto"], errors="coerce").fillna(0.0)
+
+    combo_mask = (
+        data["articulo_descripcion"].fillna("").astype(str).str.contains("COMBO", case=False, na=False)
+        | data["articulo_codigo"].str.startswith("900")
+    )
+    if not combo_mask.any():
+        return pd.DataFrame()
+
+    if combos.empty:
+        combo_codes = set()
+        combo_keys = set()
+        combo_by_code = pd.DataFrame()
+        combo_by_key = pd.DataFrame()
+    else:
+        combo_codes = set(combos["codigo"].dropna().astype(str))
+        combo_keys = set(combos["combo_key"].dropna().astype(str))
+        combo_by_code = combos.drop_duplicates("codigo").set_index("codigo")
+        combo_by_key = combos[combos["combo_key"].ne("")].drop_duplicates("combo_key").set_index("combo_key")
+
+    code_hl = data["articulo_codigo"].map(combo_by_code["hl_por_combo"]) if not combo_by_code.empty else pd.Series(0.0, index=data.index)
+    key_hl = data["articulo_key"].map(combo_by_key["hl_por_combo"]) if not combo_by_key.empty else pd.Series(0.0, index=data.index)
+    catalog_hl = pd.to_numeric(code_hl.fillna(key_hl), errors="coerce").fillna(0.0)
+    in_catalog = data["articulo_codigo"].isin(combo_codes) | data["articulo_key"].isin(combo_keys)
+    needs_review = combo_mask & (~in_catalog | catalog_hl.le(0))
+    if not needs_review.any():
+        return pd.DataFrame()
+
+    pending = data.loc[needs_review].copy()
+    combo_count = np.where(
+        pending["precio_neto"].gt(0) & pending["importe_neto"].gt(0),
+        pending["importe_neto"] / pending["precio_neto"],
+        1.0,
+    )
+    combo_count = pd.Series(combo_count, index=pending.index).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    rounded_count = combo_count.round()
+    pending["combos_vendidos_estimados"] = np.where((combo_count - rounded_count).abs() <= 0.05, rounded_count, combo_count)
+    pending["motivo"] = np.where(in_catalog.loc[pending.index], "Catalogado sin HL validado", "Combo nuevo no catalogado")
+    pending["negocio_sugerido"] = pending.get("unidad_negocio", pending.get("negocio", "Sin negocio")).fillna("Sin negocio").astype(str)
+
+    grouped = (
+        pending.groupby(["articulo_codigo", "articulo_descripcion", "motivo", "negocio_sugerido"], dropna=False)
+        .agg(
+            primera_fecha=("fecha", "min"),
+            ultima_fecha=("fecha", "max"),
+            operaciones=("fecha", "size"),
+            combos_vendidos_estimados=("combos_vendidos_estimados", "sum"),
+            hl_reportado=("hl", "sum"),
+            importe_neto=("importe_neto", "sum"),
+        )
+        .reset_index()
+        .sort_values(["ultima_fecha", "articulo_codigo"], ascending=[False, True])
+    )
+    grouped["accion_requerida"] = "Validar composicion/HL por combo y agregar a combo_hectolitros.csv"
+    return grouped
+
+
+def combo_review_csv_bytes(review: pd.DataFrame) -> bytes:
+    if review.empty:
+        return b""
+    export = review.copy()
+    for column in ("primera_fecha", "ultima_fecha"):
+        if column in export.columns:
+            export[column] = pd.to_datetime(export[column], errors="coerce").dt.strftime("%Y-%m-%d")
+    return export.to_csv(index=False).encode("utf-8-sig")
 
 
 def classify_customer_channel(value: str | None) -> str:
@@ -3248,6 +3327,45 @@ def main() -> None:
         df = apply_auxiliary_segments(df, None)
         st.sidebar.warning("No se encontro archivo auxiliares para segmentos.")
     df = ensure_analysis_columns(df)
+
+    combo_review = combo_catalog_gaps(df)
+    if "show_combo_review" not in st.session_state:
+        st.session_state["show_combo_review"] = False
+    if combo_review.empty:
+        st.sidebar.success("Combos: sin pendientes nuevos")
+    else:
+        st.sidebar.warning(f"Combos nuevos/pendientes: {len(combo_review)}")
+    if st.sidebar.button("Revisar combos nuevos", width="stretch"):
+        st.session_state["show_combo_review"] = True
+    if st.session_state["show_combo_review"]:
+        st.subheader("Revision de combos nuevos")
+        if combo_review.empty:
+            st.info("No hay combos nuevos ni combos catalogados sin HL validado en la venta diaria actual.")
+        else:
+            st.warning(
+                "Estos combos aparecen en venta diaria pero no tienen HL validado en combo_hectolitros.csv. "
+                "Hay que validar su composicion antes de sumarlos automaticamente."
+            )
+            st.dataframe(
+                combo_review,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "articulo_codigo": st.column_config.TextColumn("Codigo"),
+                    "articulo_descripcion": st.column_config.TextColumn("Combo"),
+                    "negocio_sugerido": st.column_config.TextColumn("Negocio sugerido"),
+                    "combos_vendidos_estimados": st.column_config.NumberColumn("Combos vendidos", format="%.1f"),
+                    "hl_reportado": st.column_config.NumberColumn("HL reportado", format="%.3f"),
+                    "importe_neto": st.column_config.NumberColumn("Importe neto", format="$ %.0f"),
+                },
+            )
+            st.download_button(
+                "Descargar combos pendientes",
+                data=combo_review_csv_bytes(combo_review),
+                file_name=COMBO_REVIEW_FILE_NAME,
+                mime="text/csv",
+                width="stretch",
+            )
 
     curve_history_df = pd.DataFrame(columns=df.columns)
     curve_history_files = historical_sales_files_in_folder(data_dir, current_sales_file) if uploaded is None else []
