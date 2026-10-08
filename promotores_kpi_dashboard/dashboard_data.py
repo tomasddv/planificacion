@@ -68,6 +68,13 @@ def brand_upper(ventas: pd.DataFrame):
     return ventas["marca"].fillna("").str.upper().str.strip()
 
 
+def sin_alcohol_mask(ventas: pd.DataFrame):
+    search_text = ventas.get("sku_search_text", pd.Series("", index=ventas.index)).fillna("").str.upper()
+    brand = search_text.str.contains(r"\b(?:STELLA|QUILMES|CORONA)\b", regex=True, na=False)
+    zero = search_text.str.contains(r"0[.,]0(?:%|\b)|\bCERO\b|\bSIN ALCOHOL\b", regex=True, na=False)
+    return brand & zero & ~search_text.str.contains(r"\bBAJO CERO\b", regex=True, na=False)
+
+
 def clean_text(value):
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
