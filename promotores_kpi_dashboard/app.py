@@ -5,12 +5,17 @@ import hashlib
 import os
 import re
 import shutil
+import sys
 import time
 import urllib.request
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from promotores_kpi_dashboard.dashboard_data import (
     DAY_COLS,
