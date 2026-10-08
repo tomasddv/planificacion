@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from dashboard_data import (
+from promotores_kpi_dashboard.dashboard_data import (
     DAY_COLS,
     DAY_GROUPS,
     EXCLUDED_VENDORS,
