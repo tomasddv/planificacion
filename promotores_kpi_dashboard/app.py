@@ -39,7 +39,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "reporte de clientes.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
-    "ventadiaria.txt": "1oXbLFkhG2hq5udeFCkzOUPwG4JTTu1RP",
+    "ventadiaria.txt": "190CTcpwpXnb3r8jBMnwDYJVWsED8hVI2",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
@@ -1043,7 +1043,7 @@ def combo_business_guess(search_value: str):
         return "CZA"
     if re.search(r"BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA", text):
         return "AGUAS"
-    if re.search(r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA", text):
+    if re.search(r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|\bRB\b|SABORIZADAS|ENERGIA|ENERGÍA", text):
         return "UNG"
     if re.search(r"\bGIN\b|SPIRITS", text):
         return "SPIRITS"
@@ -1135,7 +1135,7 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
             "PEPSI": r"\bPEPSI\b",
             "MIRINDA": r"MIRINDA",
             "7UP": r"\b7UP\b",
-            "RED BULL": r"RED\s*BULL|REDBULL",
+            "RED BULL": r"RED\s*BULL|REDBULL|\bRB\b",
             "GATORADE": r"GATORADE|\bGTD\b",
         }
         nabs_combo = nabs_combo_mask(search_text)
@@ -1250,7 +1250,7 @@ def nabs_combo_mask(search_text: pd.Series):
     return (
         search_text.str.contains("\\bCOMBO\\b|\\bPROMO\\b", regex=True, na=False)
         & search_text.str.contains(
-            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA",
+            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|\bRB\b|SABORIZADAS|ENERGIA|ENERGÍA",
             regex=True,
             na=False,
         )

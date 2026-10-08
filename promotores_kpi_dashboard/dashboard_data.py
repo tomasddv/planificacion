@@ -601,7 +601,7 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     if focus == "Nabs":
         nabs_divisions = {"AGUAS", "BEB ENERGIZANTES", "BEBIDAS SABORIZADAS", "GASEOSAS", "ISOTONICAS"}
         nabs_combo = combo & search_text.str.contains(
-            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|SABORIZADAS|ENERGIA|ENERGÍA|"
+            r"PEPSI|\bBLACK\b|MIRINDA|\b7UP\b|GATORADE|\bGTD\b|RED\s*BULL|REDBULL|\bRB\b|SABORIZADAS|ENERGIA|ENERGÍA|"
             r"BIDON|NESTLE|PUREZA|NPV|ECO|GLACIAR|AGUA",
             regex=True,
             na=False,
