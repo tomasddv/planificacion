@@ -29,6 +29,7 @@ DEFAULT_BIG_DASH_URL = "https://planificacionddv.streamlit.app/"
 DEFAULT_SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit.app/"
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DRIVE_CACHE_SECONDS = 900
 
 FOCUS_ALIASES = {
     "TOTAL CERVEZAS": "TOTAL CERVEZAS",
@@ -145,7 +146,7 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         return None
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or str(secret_or_env("FORCE_GDRIVE_REFRESH", "false")).lower() in {"1", "true", "si", "sí", "yes"}
-    if sales_app.has_sales_files(target) and not refresh:
+    if sales_app.has_sales_files(target) and not refresh and drive_cache_is_fresh(target):
         return target
     try:
         import gdown
@@ -216,6 +217,27 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
             return download_target
     shutil.rmtree(download_target, ignore_errors=True)
     return target if sales_app.has_sales_files(target) else None
+
+
+def drive_cache_max_age_seconds() -> int:
+    raw = secret_or_env("PROMOTER_DRIVE_CACHE_SECONDS", str(DEFAULT_DRIVE_CACHE_SECONDS))
+    try:
+        return max(60, int(float(raw)))
+    except Exception:
+        return DEFAULT_DRIVE_CACHE_SECONDS
+
+
+def drive_cache_is_fresh(folder: Path) -> bool:
+    if not sales_app.has_sales_files(folder):
+        return False
+    max_age = drive_cache_max_age_seconds()
+    if max_age <= 0:
+        return False
+    daily_file = sales_app.latest_daily_file_in_folder(folder)
+    marker = daily_file or max((path for path in folder.iterdir() if path.is_file()), key=lambda path: path.stat().st_mtime, default=None)
+    if marker is None:
+        return False
+    return (time.time() - marker.stat().st_mtime) <= max_age
 
 
 def latest_objectives_file(folder: Path | None) -> Path | None:
@@ -300,7 +322,8 @@ def load_drive_objectives(drive_url: str, refresh_nonce: float = 0.0) -> tuple[p
     path = latest_objectives_file(folder)
     if path is None:
         return pd.DataFrame(columns=["promotor", "foco", "objetivo_drive"]), ""
-    return parse_objectives_file(path), path.name
+    modified = time.strftime("%d/%m/%Y %H:%M", time.localtime(path.stat().st_mtime))
+    return parse_objectives_file(path), f"{path.name} ({modified})"
 
 
 def apply_drive_objectives(planning: pd.DataFrame, objectives: pd.DataFrame) -> pd.DataFrame:
@@ -350,7 +373,14 @@ def load_sales_from_drive(drive_url: str, refresh_nonce: float = 0.0) -> tuple[p
     else:
         df = sales_app.apply_auxiliary_segments(df, None)
 
-    return sales_app.ensure_analysis_columns(df), daily_file.name
+    df = sales_app.ensure_analysis_columns(df)
+    modified = time.strftime("%d/%m/%Y %H:%M", time.localtime(daily_file.stat().st_mtime))
+    if not df.empty and "fecha" in df.columns:
+        latest_date = pd.Timestamp(df["fecha"].dropna().max()).strftime("%d/%m/%Y")
+        label = f"{daily_file.name} ({modified}) · datos hasta {latest_date}"
+    else:
+        label = f"{daily_file.name} ({modified})"
+    return df, label
 
 
 def focus_sales(sales: pd.DataFrame, focus: str) -> pd.DataFrame:
