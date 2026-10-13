@@ -30,6 +30,13 @@ DEFAULT_SMALL_DASH_URL = "https://planificacion-ifeevprb7is4zwjk6k5suo.streamlit
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DRIVE_CACHE_SECONDS = 900
+PLANIFICADOR_DRIVE_FILE_IDS = {
+    "ventadiaria.txt": "190CTcpwpXnb3r8jBMnwDYJVWsED8hVI2",
+    "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
+    "REPORTE DE CLIENTES.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
+    "venta JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
+    "venta junio 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
+}
 
 FOCUS_ALIASES = {
     "TOTAL CERVEZAS": "TOTAL CERVEZAS",
@@ -190,8 +197,14 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
 
     try:
         if sales_app.google_drive_folder_id(url) == sales_app.google_drive_folder_id(sales_app.DEFAULT_DRIVE_URL):
-            for local_name, file_id in sales_app.DEFAULT_DRIVE_FILE_IDS.items():
+            for local_name, file_id in PLANIFICADOR_DRIVE_FILE_IDS.items():
                 download_by_id(file_id, download_target / local_name)
+            list_default_folder = str(secret_or_env("PROMOTER_LIST_DRIVE_FOLDER", "false")).lower() in {"1", "true", "si", "sí", "yes"}
+            if not list_default_folder and sales_app.has_sales_files(download_target):
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                download_target.rename(target)
+                return target
 
         drive_files = gdown.download_folder(
             url=url,
