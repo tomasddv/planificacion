@@ -973,6 +973,50 @@ def load_combo_hl_table_from_project() -> pd.DataFrame:
     return load_combo_hl_table(str(path), modified_ns)
 
 
+def split_mixed_combo_hl(sales: pd.DataFrame, corrected: pd.Series, combos: pd.DataFrame) -> pd.DataFrame:
+    """Desglosa HL de combos mixtos validados; conserva el importe total.
+
+    El reparto monetario por componente es proporcional a HL, no un precio ERP.
+    Solo se desglosan filas cuyo HL faltante se corrigio en esta llamada.
+    """
+    path = PROJECT_ROOT / "combo_componentes.csv"
+    if not path.exists() or not corrected.any():
+        return sales
+    detail = pd.read_csv(path, dtype="string").fillna("")
+    detail["hl_por_combo"] = pd.to_numeric(detail["hl_por_combo"], errors="coerce")
+    totals = combos.drop_duplicates("codigo").set_index("codigo")["hl_por_combo"]
+    parts = []
+    split_positions = set()
+    for code, components in detail.groupby("codigo", sort=False):
+        total = float(components["hl_por_combo"].sum())
+        if components["hl_por_combo"].isna().any() or not components["hl_por_combo"].gt(0).all():
+            continue
+        if code not in totals.index or not np.isclose(total, totals.loc[code]):
+            continue
+        positions = np.flatnonzero((corrected & sales["articulo_codigo"].eq(code)).to_numpy())
+        if len(positions) == 0:
+            continue
+        source = sales.iloc[positions]
+        split_positions.update(positions.tolist())
+        for _, component in components.iterrows():
+            part = source.copy()
+            fraction = float(component["hl_por_combo"]) / total
+            part["hl"] = source["hl"] * fraction
+            # No duplicar importes ni alterar el numero inferido de combos.
+            for column in ("importe_neto", "precio_neto"):
+                part[column] = source[column] * fraction
+            part["articulo_componente"] = component["articulo_componente"]
+            part["descripcion_componente"] = component["descripcion"]
+            for column in ("unidad_negocio", "marca", "calibre", "division"):
+                part[column] = component[column]
+            part["negocio"] = component["unidad_negocio"]
+            parts.append(part)
+    if not parts:
+        return sales
+    keep = [position for position in range(len(sales)) if position not in split_positions]
+    return pd.concat([sales.iloc[keep], *parts], ignore_index=True)
+
+
 def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
     combos = load_combo_hl_table_from_project()
     required = {"articulo_codigo", "articulo_descripcion", "precio_neto", "importe_neto", "hl"}
@@ -993,7 +1037,11 @@ def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
     key_unit = result["articulo_key"].map(combo_by_key["unidad_negocio"])
     combo_unit = code_unit.fillna(key_unit).fillna("")
 
-    combo_mask = result["articulo_descripcion"].fillna("").astype(str).str.contains("COMBO", case=False, na=False)
+    combo_mask = (
+        result["articulo_descripcion"].fillna("").astype(str).str.contains("COMBO", case=False, na=False)
+        | result["articulo_codigo"].isin(combo_by_code.index)
+        | result["articulo_key"].isin(combo_by_key.index)
+    )
     missing_hl = result["hl"].fillna(0).eq(0)
     can_correct = combo_mask & missing_hl & combo_hl.gt(0)
 
@@ -1011,7 +1059,7 @@ def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
     has_unit = combo_unit.astype(str).str.strip().ne("")
     result.loc[can_correct & empty_business & has_unit, "unidad_negocio"] = combo_unit.loc[can_correct & empty_business & has_unit]
     result = result.drop(columns=["articulo_key"], errors="ignore")
-    return result
+    return split_mixed_combo_hl(result, can_correct, combos)
 
 
 def combo_catalog_gaps(sales: pd.DataFrame) -> pd.DataFrame:

@@ -1,4 +1,4 @@
-﻿codigo,combo,unidad_negocio,hl_por_combo,nota
+codigo,combo,unidad_negocio,hl_por_combo,nota
 900098,COMBO GIN CORTÁ LA SED,UNG,0.11,Validado ERP 2026-08-31: 2 articulos
 900226,COMBO ECO 500 + ECO 1.5L,AGUAS ECO,0.15,Validado ERP 2026-08-31: 2 articulos
 900299,*COMBO LATONES - BAJO DROP FEB*,CZA,0.142,5 fourpacks 1x4 710cc
@@ -13,7 +13,7 @@
 900392,*COMBO GTD 750cc*,UNG,0.135,Validado ERP 2026-08-31: 3 articulos
 900393,COMBO LANZAMIENTO STELLA PURE GOLD + STELLA 710,CZA,0.1334,1 sixpack 330cc + 1 bulto 4x4 710cc
 900397,COMBO LATAS - PAT SUR,UNG,0.07986,Validado ERP 2026-08-31: 4 articulos
-900398,COMBO PET 500 - PAT 4,UNG,0.12,Estimado ERP sin cantidades: 4 articulos x 1 bulto X6 500cc
+900398,COMBO PET 500 - PAT 4,UNG,0.12,Validado ERP 2026-10-02: 25645: 1 bultos x6 + 0 unidades de 0.5 L; 30663: 1 bultos x6 + 0 unidades de 0.5 L; 30791: 1 bultos x6 + 0 unidades de 0.5 L; 30974: 1 bultos x6 + 0 unidades de 0.5 L
 900399,COMBO 0.0 KT (JUNIO),CZA,0.06996,Validado ERP 2026-08-31: 3 articulos
 900404,COMBO SABORIZADAS,UNG,0.06,2 packs 1x6 500cc
 900405,COMBO BLACK,UNG,0.03009,Validado ERP 2026-08-31: 2 articulos
@@ -27,13 +27,24 @@
 900423,COMBO RED BULL CON UN 20% OFF,UNG,0.0642,5 packs 1x4 250cc + 1 pack 1x4 355cc
 900424,Combo Redbull a 10% OFF,UNG,0.03,Validado ERP 2026-08-31: 3 articulos
 900425,Combo ECO 500 con & sin gas con un 26% OFF,AGUAS ECO,0.12,Validado ERP 2026-08-31: 2 articulos
-900427,"Combo ECO 1,5L + BIDON Glaciar 6.4. 16% OFF",AGUAS ECO,0.090128,Validado ERP 2026-08-31: 2 articulos
+900427,"Combo ECO 1,5L + BIDON Glaciar 6.4. 16% OFF",AGUAS ECO,0.218,Composicion ERP guardada 2026-08-31: 2439 1x6 1.5L + 32707 1x2 6.4L; volumen confirmado venta diaria 2026-10-06. Corrige conversion 6.400CC.
 900428,COMBO LATONES - BRAHMA Y QUILMES - PATAGONIA,CZA,0.1136,Validado ERP 2026-08-31: 4 articulos
 900429,COMBO STELLA PORRON 330 LAGER + PURE GOLD,CZA,0.0396,Validado ERP 2026-08-31: 2 articulos
 900430,PROMO STELLA LATA 10% LAGER + PURE GOLD PATAGONIA,CZA,0.05676,Validado ERP 2026-08-31: 2 articulos
 900433,COMBO 3L + GTD 500 - PATAGONIA,UNG,7.05,15 packs 500cc + 35 packs 3000cc
 900435,COMBO AS GASEOSAS FAM - PATAGONIA SUR,UNG,3.08,Validado ERP 2026-08-31: 6 articulos
 900436,COMBO K+T GASEOSAS FAM - PATAGONIA SUR,UNG,1.54,Validado ERP 2026-08-31: 6 articulos
-900445,COMBO LITRO BRAHMA Y QUILMES,CZA,2.4,ERP 2026-09-29: 1 bulto Quilmes x12 1000RET + 1 bulto Brahma x12 1000RET
+900445,COMBO LITRO BRAHMA Y QUILMES,CZA,0.24,Validado ERP 2026-10-02: 7026: 1 bultos x12 + 0 unidades de 1 L; 7038: 1 bultos x12 + 0 unidades de 1 L
 900461,COMBO LATA CON Y SIN ALCOHOL DE STELLA,CZA,0.22704,ERP 2026-09-29: 1 bulto Stella Artois PM can 4x6 473cc + 1 bulto Stella Artois 0.0 can 4x6 473cc
 900463,COMBO STELLA PORRONES 330CC,CZA,0.1584,ERP 2026-09-29: 1 bulto Stella Artois PM OW 4x6 330cc + 1 bulto Stella Pure Gold OW 4x6 330cc
+900440,Combo KT 3L + GTD 500 - PAT SUR,UNG,1.05,Validado ERP 2026-10-02: 1416: 1 bultos x6 + 0 unidades de 0.5 L; 1418: 2 bultos x6 + 0 unidades de 0.5 L; 11522: 2 bultos x6 + 0 unidades de 0.5 L; 30647: 3 bultos x6 + 0 unidades de 3 L; 30970: 2 bultos x6 + 0 unidades de 3 L
+900456,COMBO RB 6 SKUs,UNG,0.06,Validado ERP 2026-10-02: 16371: 0 bultos x24 + 4 unidades de 0.25 L; 16372: 0 bultos x24 + 4 unidades de 0.25 L; 26422: 0 bultos x24 + 4 unidades de 0.25 L; 29799: 0 bultos x24 + 4 unidades de 0.25 L; 32710: 0 bultos x24 + 4 unidades de 0.25 L; 58089: 0 bultos x24 + 4 unidades de 0.25 L
+900459,COMBO BLACK COSTA ANDINA - PATAGONIA SUR,UNG,0.05124,Validado ERP 2026-10-02: 30791: 1 bultos x6 + 0 unidades de 0.5 L; 30793: 0 bultos x24 + 6 unidades de 0.354 L
+900460,COMBO LITRO BRAHMA Y QUILMES,CZA,0.24,Validado ERP 2026-10-02: 7026: 1 bultos x12 + 0 unidades de 1 L; 7038: 1 bultos x12 + 0 unidades de 1 L
+900422,Combo ECO 850cc + Glaciar Go 750cc 26% OFF,AGUAS ECO,0.096,Validado ERP 2026-10-05: 22185: 1 bulto x6 x750cc + 27081: 1 bulto x6 x850cc
+900444,COMBO AGUAS + UNG - PAT SUR,MIXTO,0.41,Validado ERP 2026-10-05: 2439: 1 bulto x6 x1500cc AGUAS ECO (0.09 HL); 30645 y 47489: 1 bulto x8 x2000cc cada uno UNG (0.32 HL). Desglose en combo_componentes.csv
+900455,COMBO RB 3 SKUs,UNG,0.0342,Validado ERP 2026-10-05: 16371: 8 unidades x250cc + 22256: 4 unidades x355cc; bultos 0 para ambos
+900438,COMBO Black - SUR SEP,UNG,0.25,Validado ERP 2026-10-13: 30789 1 bulto x8 x2000cc + 30790 1 bulto x6 x1500cc; 25 L / 100.
+900439,COMBO ENERGÍA - PAT SEP,UNG,0.04,Validado ERP 2026-10-13: 11522 1 bulto x6 x500cc + 16371 0 bultos y 4 unidades x250cc; 4 L / 100.
+900441,COMBO RED BULL 2 - PAT,UNG,0.03,Validado ERP 2026-10-13: 16371 + 26422 + 29799 cada uno 0 bultos y 4 unidades x250cc; 3 L / 100.
+900464,COMBO CORONA 710 Y STELLA 710-PATAGONIA,CZA,0.1278,Validado ERP 2026-10-13: 20433 1 bulto x12 x710cc + 24248 1 bulto x6 x710cc; 12.78 L / 100.
