@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DRIVE_CACHE_SECONDS = 900
 PLANIFICADOR_DRIVE_FILE_IDS = {
     "ventadiaria.txt": "190CTcpwpXnb3r8jBMnwDYJVWsED8hVI2",
+    "OBJETIVOS.xlsx": "1uUJ6PfiB_yMlnoi0oSihUY8wBx1OpmuB",
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "REPORTE DE CLIENTES.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
     "venta JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
