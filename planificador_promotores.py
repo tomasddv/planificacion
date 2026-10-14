@@ -687,7 +687,8 @@ def complete_days(days: pd.DataFrame, planning: pd.DataFrame, selected_date: pd.
         if column not in result.columns:
             result[column] = value
         else:
-            result[column] = pd.to_numeric(result[column], errors="coerce").fillna(value)
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+            result[column] = result[column].where(result[column] > 0, value)
     return result
 
 
