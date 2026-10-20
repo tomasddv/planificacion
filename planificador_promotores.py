@@ -184,6 +184,7 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
             or ("FRESCURA" in normalized)
             or ("SEMAFORO" in normalized)
             or ("SEMÁFORO" in normalized)
+            or (normalized == "COMBOS_GRUPOS.CSV")
         )
 
     def download_by_id(file_id: str, output: Path) -> None:
@@ -198,6 +199,7 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
 
     try:
         if sales_app.google_drive_folder_id(url) == sales_app.google_drive_folder_id(sales_app.DEFAULT_DRIVE_URL):
+            download_by_id(secret_or_env("COMBOS_GRUPOS_DRIVE_ID", ""), download_target / "combos_grupos.csv")
             for local_name, file_id in PLANIFICADOR_DRIVE_FILE_IDS.items():
                 download_by_id(file_id, download_target / local_name)
             list_default_folder = str(secret_or_env("PROMOTER_LIST_DRIVE_FOLDER", "false")).lower() in {"1", "true", "si", "sí", "yes"}
@@ -1195,6 +1197,18 @@ def main() -> None:
         st.sidebar.success("Actualizando desde Drive y Sheet...")
     st.sidebar.caption("Sheet conectado")
     st.sidebar.code(sheet_url, language=None)
+
+    section = st.sidebar.radio("Sección", ["Planificación", "Usabilidad combos"])
+    if section == "Usabilidad combos":
+        from combos_tracking import render
+        nonce = float(st.session_state.get("drive_refresh_nonce", 0.0))
+        folder = resolve_google_drive_folder(drive_url, force_refresh=nonce > 0)
+        st.session_state["drive_refresh_nonce"] = 0.0
+        if folder is None:
+            st.error("No se pudo obtener la carpeta de Drive. Usá Actualizar Drive y Sheet.")
+            return
+        render(folder, sales_app.latest_daily_file_in_folder(folder), sales_app.read_tabular, sales_app.parse_period_date)
+        return
 
     try:
         refresh_nonce = float(st.session_state.get("drive_refresh_nonce", 0.0))

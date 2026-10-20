@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.cloud_data/
+.streamlit/secrets.toml
+.planner_data/
+.venv/

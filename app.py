@@ -259,6 +259,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
             or ("FRESCURA" in normalized)
             or ("SEMAFORO" in normalized)
             or ("SEMÁFORO" in normalized)
+            or (normalized == "COMBOS_GRUPOS.CSV")
         )
 
     def download_by_id(file_id: str, output: Path, label: str) -> None:
@@ -3605,9 +3606,13 @@ def main() -> None:
                 "blue" if window == 7 else "green" if window == 14 else "orange" if window == 21 else "violet",
             )
 
-    tab_overview, tab_informe, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_base = st.tabs(
-        ["Evolucion", "Informe", "AA", "Rankings", "Promotores", "Planificacion", "Base normalizada"]
+    tab_overview, tab_informe, tab_aa, tab_rankings, tab_promoters, tab_planning, tab_combos, tab_base = st.tabs(
+        ["Evolucion", "Informe", "AA", "Rankings", "Promotores", "Planificacion", "Usabilidad combos", "Base normalizada"]
     )
+
+    with tab_combos:
+        from combos_tracking import render
+        render(data_dir, actual_sales_file, read_tabular, parse_period_date)
 
     with tab_overview:
         default_curve_start, default_curve_end = default_curve_period(curve_filtered, selected_date)
