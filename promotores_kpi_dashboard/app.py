@@ -22,6 +22,7 @@ from promotores_kpi_dashboard.dashboard_data import (
     DAY_GROUPS,
     EXCLUDED_VENDORS,
     KPI_FOCUSES,
+    MICHELOB_710_COMBO_CODES,
     filter_client_activations_by_focus_range,
     filter_sales_by_focus,
     filter_sales_by_focus_range,
@@ -1156,6 +1157,8 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
 
     selected_rows = ventas_df[product.isin(direct_skus)]
     selected_brands = set(selected_rows.get("marca", pd.Series(dtype=str)).fillna("").str.upper())
+    if selected_rows.get("articulo_codigo", pd.Series(dtype=str)).isin({"49827"}).any():
+        mask = mask | ventas_df["articulo_codigo"].isin(MICHELOB_710_COMBO_CODES)
     gatorade_selected = (
         "GATORADE TODOS" in selected_upper_without_combos
         or "GATORADE" in selected_brands

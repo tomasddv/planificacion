@@ -63,6 +63,8 @@ BALANCED_BRANDS = {
     "MICHELOB ULTRA",
 }
 
+MICHELOB_710_COMBO_CODES = {"900472"}
+
 
 def brand_upper(ventas: pd.DataFrame):
     return ventas["marca"].fillna("").str.upper().str.strip()
@@ -602,7 +604,11 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
         ) & ~balanced
         return filtered[cza & premium]
     if focus == "Latones 710":
-        return filtered[filtered["calibre_unificado"].eq("LATON 710 CC") | latones_combo]
+        return filtered[
+            filtered["calibre_unificado"].eq("LATON 710 CC")
+            | latones_combo
+            | filtered["articulo_codigo"].isin(MICHELOB_710_COMBO_CODES)
+        ]
     if focus == "Balanced Choices":
         return filtered[cza & balanced]
     if focus == "Nabs":
