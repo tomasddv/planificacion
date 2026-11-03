@@ -46,7 +46,7 @@ DEFAULT_DRIVE_FILE_IDS = {
     "RUTAS 7-26.xlsx": "12REZlhQOVsQVIEIAKJ6mFSsrtNCSK7s8",
     "reporte de clientes.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
-    "ventadiaria.txt": "190CTcpwpXnb3r8jBMnwDYJVWsED8hVI2",
+    "ventadiaria.txt": "1I-vewZKeotS02twpDgSnmAbYjKT4mlXG",
 }
 DEFAULT_ANNUAL_SALES_FILE_ID = "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV"
 DEFAULT_MONTHLY_CLOSED_FILE_IDS = {
@@ -283,11 +283,12 @@ def resolve_google_drive_folder(drive_url: str | None = None, force_refresh: boo
     def wanted_drive_file(name: str):
         normalized = normalized_drive_name(name)
         compact = normalized.replace(" ", "")
+        is_current_daily = Path(str(name)).suffix.lower() in {".txt", ".csv"} and Path(str(name)).stem.upper().replace(" ", "") == "VENTADIARIA"
         return (
             "RUTAS" in normalized
             or "AUXILIARES" in normalized
             or ("REPORTE" in normalized and "CLIENTES" in normalized)
-            or ("VENTA" in normalized and "DIARIA" in compact and "ANUAL" not in normalized and "BULTOS" not in normalized)
+            or is_current_daily
             or "PLANTILLACLIENTESAR" in compact
         )
 
@@ -1628,6 +1629,7 @@ rutas_grupo = dataset["rutas_grupo"]
 promotores = dataset["promotores"]
 
 fechas = [pd.Timestamp(f).date() for f in dataset["fechas"]]
+st.caption(f"Venta diaria: {Path(dataset['sources']['ventas']).name} · última fecha cargada: {max(fechas)}")
 options = kpi_options()
 group_order = ["LUJU", "MAVI", "MISA", "DO", "OTROS"]
 route_groups = [g for g in group_order if g in set(rutas_grupo["grupo_ruta"].dropna().unique())]

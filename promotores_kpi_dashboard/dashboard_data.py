@@ -226,6 +226,18 @@ def find_data_file(base: Path, required_terms: tuple[str, ...], suffixes: tuple[
     return candidates[0] if candidates else None
 
 
+def find_current_daily_sales_file(base: Path):
+    suffixes = {".txt", ".csv"}
+    current = [
+        path for path in base.rglob("*")
+        if path.is_file() and path.suffix.lower() in suffixes
+        and normalized_name(path).replace(" ", "") == "VENTADIARIA"
+    ] if base.exists() else []
+    if current:
+        return max(current, key=lambda path: path.stat().st_mtime)
+    return find_data_file(base, ("VENTA", "DIARIA"), tuple(suffixes), ("ANUAL", "BULTOS"))
+
+
 
 
 def excel_col_index(label: str):
@@ -490,7 +502,7 @@ def load_dataset(base_dir: str):
     base = Path(base_dir)
     rutas_path = find_data_file(base, ("RUTAS",), (".xlsx", ".xls"))
     aux_path = find_data_file(base, ("AUXILIARES",), (".xlsx", ".xls"))
-    ventas_path = find_data_file(base, ("VENTA", "DIARIA"), (".txt", ".csv"), ("ANUAL", "BULTOS"))
+    ventas_path = find_current_daily_sales_file(base)
     ventas_anual_path = find_data_file(base, ("VENTA", "ANUAL"), (".txt", ".csv"))
     reporte_clientes_path = find_data_file(base, ("REPORTE", "CLIENTES"), (".xlsx", ".xls", ".csv", ".txt"))
     clientes_path = find_clientes_path(base)
