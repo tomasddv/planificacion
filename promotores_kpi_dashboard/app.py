@@ -1011,6 +1011,8 @@ def sku_options_for_business(ventas_df: pd.DataFrame, business: str):
         special_options.append("PEPSI BLACK TODOS")
     if sin_alcohol_mask(scoped).any():
         special_options.append("SIN ALCOHOL TODOS")
+    if business in ("Todos", "CZA"):
+        special_options.append("269 TODOS")
     special_options.extend(dynamic_combo_promo_options(ventas_df if business != "Todos" else scoped))
     values = list(dict.fromkeys(special_options + values))
     return ["Todos"] + values
@@ -1092,13 +1094,26 @@ def selected_combo_descriptions(selected_skus: list[str]):
     return descriptions
 
 
+def sku_269_mask(ventas_df: pd.DataFrame):
+    description = ventas_df.get("articulo_descripcion", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
+    brand = ventas_df.get("marca", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
+    codes = ventas_df.get("articulo_codigo", pd.Series("", index=ventas_df.index)).fillna("").astype(str)
+    beer_269 = brand.str.contains(r"\bBRAHMA\b|\bQUILMES\b", regex=True, na=False) & description.str.contains(r"\b269(?:\b|CC)", regex=True, na=False)
+    combo_269 = codes.eq("900473") | (
+        description.str.contains(r"\bCOMBO\b|\bPROMO\b", regex=True, na=False)
+        & description.str.contains(r"\b269(?:\b|CC)", regex=True, na=False)
+        & description.str.contains(r"BRAH|QUIL", regex=True, na=False)
+    )
+    return beer_269 | combo_269
+
+
 def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
     product = ventas_df["producto"].fillna("")
     brand = ventas_df["marca"].fillna("").str.upper()
     unified_brand = ventas_df.get("marca_unificada", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     search_text = ventas_df.get("sku_search_text", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
     selected_upper = {str(sku).upper() for sku in selected_skus}
-    virtual_prefixes = ("PURE GOLD", "GATORADE", "PEPSI BLACK", "SIN ALCOHOL")
+    virtual_prefixes = ("PURE GOLD", "GATORADE", "PEPSI BLACK", "SIN ALCOHOL", "269 TODOS")
     combo_descriptions = selected_combo_descriptions(selected_skus)
     combo_option_prefix_upper = COMBO_OPTION_PREFIX.upper()
     selected_upper_without_combos = {sku for sku in selected_upper if not sku.startswith(combo_option_prefix_upper)}
@@ -1203,6 +1218,8 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
 
     if "SIN ALCOHOL TODOS" in selected_upper_without_combos:
         mask = mask | sin_alcohol_mask(ventas_df)
+    if "269 TODOS" in selected_upper_without_combos:
+        mask = mask | sku_269_mask(ventas_df)
 
     if latones_selected:
         mask = mask | latones_combo_mask(search_text)
