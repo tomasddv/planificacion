@@ -1454,7 +1454,7 @@ def parse_report_objectives_matrix(path: Path) -> pd.DataFrame:
     total_cvza = np.nansum([total_cervezas, above_core])
     if pd.isna(total_cervezas) and pd.isna(above_core):
         total_cvza = np.nan
-    total_ung = rows_by_code.get("19341", np.nan)
+    total_ung = rows_by_code.get("30645", rows_by_code.get("19341", np.nan))
     aguas = rows_by_code.get("18743", np.nan)
     core_value = total_cervezas
 
@@ -1498,6 +1498,7 @@ def parse_report_supervisor_objectives_matrix(path: Path) -> pd.DataFrame:
         "2218": "MESA CERVEZA",
         "16667": "MESA CERVEZA",
         "19341": "MESA UNG",
+        "30645": "MESA UNG",
     }
     rows: list[dict[str, object]] = []
     for _, row in source.loc[header_index + 1 :].iterrows():
