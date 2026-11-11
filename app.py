@@ -2027,10 +2027,13 @@ def exact_previous_year_value(
 
 
 def argentina_holidays_for_years(years: list[int]) -> set[pd.Timestamp]:
-    if holidays is None:
-        return set()
-    holiday_dates = holidays.country_holidays("AR", years=years)
-    return {pd.Timestamp(day).normalize() for day in holiday_dates.keys()}
+    holiday_dates = holidays.country_holidays("AR", years=years) if holidays is not None else {}
+    dates = {pd.Timestamp(day).normalize() for day in holiday_dates.keys()}
+    if 2026 in years:
+        # Calendario operativo de noviembre confirmado por el distribuidor.
+        dates = {day for day in dates if (day.year, day.month) != (2026, 11)}
+        dates.update({pd.Timestamp("2026-11-09"), pd.Timestamp("2026-11-23")})
+    return dates
 
 
 def selling_day_weight(date_value: pd.Timestamp, holiday_dates: set[pd.Timestamp]) -> float:
