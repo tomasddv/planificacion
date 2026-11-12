@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DRIVE_CACHE_SECONDS = 900
 PLANIFICADOR_DRIVE_FILE_IDS = {
     "ventadiaria.txt": "1I-vewZKeotS02twpDgSnmAbYjKT4mlXG",
-    "OBJETIVOS.xlsx": "1uUJ6PfiB_yMlnoi0oSihUY8wBx1OpmuB",
+    "OBJETIVOS.xlsx": "1PI4e-f1Qw4jlIlMlky4Ay-LKRQGdXJuy",
     "AUXILIARES.xlsx": "1zXhbWtT7K1tY43MmYz7oTTYifMgmLyFT",
     "REPORTE DE CLIENTES.xlsx": "1wMDck39W-Of-4HESCy6WXDWtnW02Swdz",
     "venta JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
@@ -201,7 +201,7 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         if sales_app.google_drive_folder_id(url) == sales_app.google_drive_folder_id(sales_app.DEFAULT_DRIVE_URL):
             download_by_id(secret_or_env("COMBOS_GRUPOS_DRIVE_ID", ""), download_target / "combos_grupos.csv")
             for local_name, file_id in PLANIFICADOR_DRIVE_FILE_IDS.items():
-                if local_name == "ventadiaria.txt":
+                if local_name in {"ventadiaria.txt", "OBJETIVOS.xlsx"}:
                     continue
                 download_by_id(file_id, download_target / local_name)
             try:
@@ -222,10 +222,22 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
                 )
                 if current_file is not None:
                     download_by_id(current_file.id, download_target / "ventadiaria.txt")
+                objectives_file = next(
+                    (
+                        file for file in current_files or []
+                        if sales_app.normalized_drive_filename(Path(str(file.path)).name).replace(" ", "")
+                        == "OBJETIVOS.XLSX"
+                    ),
+                    None,
+                )
+                if objectives_file is not None:
+                    download_by_id(objectives_file.id, download_target / "OBJETIVOS.xlsx")
             except Exception:
                 pass
             if not (download_target / "ventadiaria.txt").exists():
                 download_by_id(PLANIFICADOR_DRIVE_FILE_IDS["ventadiaria.txt"], download_target / "ventadiaria.txt")
+            if not (download_target / "OBJETIVOS.xlsx").exists():
+                download_by_id(PLANIFICADOR_DRIVE_FILE_IDS["OBJETIVOS.xlsx"], download_target / "OBJETIVOS.xlsx")
             list_default_folder = str(secret_or_env("PROMOTER_LIST_DRIVE_FOLDER", "false")).lower() in {"1", "true", "si", "sí", "yes"}
             if not list_default_folder and sales_app.has_sales_files(download_target):
                 if target.exists():
