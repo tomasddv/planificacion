@@ -219,6 +219,10 @@ def has_sales_files(path: Path) -> bool:
     )
 
 
+def drive_cache_is_fresh(folder: Path, max_age_seconds: int = 900) -> bool:
+    return folder.exists() and time.time() - folder.stat().st_mtime < max_age_seconds
+
+
 def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refresh: bool = False) -> Path | None:
     url = secret_or_env(secret_name, DEFAULT_DRIVE_URL)
     if not url:
@@ -227,7 +231,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
     has_files = has_sales_files(target)
-    if has_files and not refresh:
+    if has_files and not refresh and drive_cache_is_fresh(target):
         return target
 
     try:

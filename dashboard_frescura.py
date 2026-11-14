@@ -369,7 +369,7 @@ def download_drive_item(item, target_folder: Path) -> Path | None:
 
 def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path | None:
     target = sales_app.PROJECT_ROOT / ".cloud_data" / "frescura"
-    if target.exists() and any(target.iterdir()) and not force_refresh:
+    if target.exists() and any(target.iterdir()) and not force_refresh and sales_app.drive_cache_is_fresh(target):
         return target
     items = drive_folder_items(drive_url)
     if not items:
@@ -651,7 +651,7 @@ def build_sku_accumulated(lots: pd.DataFrame) -> pd.DataFrame:
     if lots.empty:
         return pd.DataFrame()
     base = lots.copy()
-    base["stock_lote"] = pd.to_numeric(base["stock_lote"], errors="coerce").fillna(0)
+    base["stock_lote"] = pd.to_numeric(base["stock_lote"], errors="coerce").fillna(0).astype("float64")
     grouped = (
         base.groupby(["codigo", "descripcion", "ciudad"], as_index=False)
         .agg(

@@ -367,7 +367,7 @@ def latest_drive_item(items: list, include_terms: tuple[str, ...], suffixes: tup
 
 def prepare_drive_sources(drive_url: str, force_refresh: bool = False) -> Path | None:
     target = sales_app.PROJECT_ROOT / ".cloud_data" / "bultos_accion"
-    if target.exists() and any(target.iterdir()) and not force_refresh:
+    if target.exists() and any(target.iterdir()) and not force_refresh and sales_app.drive_cache_is_fresh(target):
         return target
     items = drive_folder_items(drive_url)
     if not items:
