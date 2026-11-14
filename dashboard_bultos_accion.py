@@ -602,6 +602,9 @@ def apply_filters(data: pd.DataFrame) -> pd.DataFrame:
 def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
     if data.empty:
         return pd.DataFrame()
+    data = data.copy()
+    # Use NumPy floats here to avoid nullable-array fill errors inside pivot_table.
+    data["bultos"] = pd.to_numeric(data["bultos"], errors="coerce").fillna(0).astype("float64")
     grouped = data.groupby(
         ["cliente_codigo", "cliente", "canal_accion", "ruta", "vendedor", "accion"],
         as_index=False,
@@ -614,8 +617,10 @@ def build_customer_summary(data: pd.DataFrame) -> pd.DataFrame:
         columns="accion",
         values="bultos",
         aggfunc="sum",
-        fill_value=0.0,
     ).reset_index()
+    for action in ["CORE", "VALUE"]:
+        if action in pivot.columns:
+            pivot[action] = pivot[action].fillna(0.0)
     pivot = pivot.merge(supervisors, on="cliente_codigo", how="left")
     for action in ["CORE", "VALUE"]:
         if action not in pivot.columns:
