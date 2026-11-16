@@ -37,7 +37,7 @@ SALES_CURVE_CUTOFF = pd.Timestamp("2026-07-31")
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DRIVE_URL = "https://drive.google.com/drive/folders/1cukgXLUaPsEDK_yD7tSwgaBFZAbiDUot?usp=drive_link"
 DEFAULT_DRIVE_FILE_IDS = {
-    "ventadiaria.txt": "12c7hy-bTbg7P_1QYUyKKcooNLo4iog1x",
+    "ventadiaria.txt": "1I-vewZKeotS02twpDgSnmAbYjKT4mlXG",
     "venta anual.txt": "16-AIn2Sp0TODYXKXaM2duX2pEw4TRPAV",
     "venta junio 2026.txt": "1t3Qck9PMkvq4qp6XNynVUAGV1REP8NqD",
     "venta JULIO.txt": "1nMCKcAXe7n_ROsJtbtgSuqik5pR4VdCW",
@@ -301,6 +301,9 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
             download_notes.append(f"carpeta Drive: {exc}")
     except Exception as exc:
         download_notes.append(f"Drive: {exc}")
+
+    if not exact_daily_files_in_folder(tmp_target) and google_drive_folder_id(url) == google_drive_folder_id(DEFAULT_DRIVE_URL):
+        download_by_id(DEFAULT_DRIVE_FILE_IDS["ventadiaria.txt"], tmp_target / "ventadiaria.txt", "ventadiaria.txt")
 
     if tmp_target.exists() and has_sales_files(tmp_target):
         if target.exists():
@@ -1035,6 +1038,7 @@ def apply_combo_hl_corrections(sales: pd.DataFrame) -> pd.DataFrame:
         return sales
 
     result = sales.copy()
+    result["hl"] = pd.to_numeric(result["hl"], errors="coerce").astype("Float64")
     result["articulo_codigo"] = result["articulo_codigo"].fillna("").astype(str).str.extract(r"(\d+)", expand=False).fillna("")
     result["articulo_key"] = result["articulo_descripcion"].fillna("").astype(str).map(clean_name)
     combo_by_code = combos.drop_duplicates("codigo").set_index("codigo")
