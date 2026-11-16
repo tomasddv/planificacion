@@ -844,10 +844,10 @@ def parse_argentine_number(series: pd.Series) -> pd.Series:
         series.astype("string")
         .str.strip()
         .str.replace("%", "", regex=False)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-        .str.replace(r"[^0-9.\-]", "", regex=True)
     )
+    comma_decimal = text.str.contains(",", regex=False, na=False)
+    text = text.where(~comma_decimal, text.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
+    text = text.str.replace(r"[^0-9.\-]", "", regex=True)
     return pd.to_numeric(text, errors="coerce")
 
 
