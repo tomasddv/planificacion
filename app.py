@@ -231,7 +231,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
     has_files = has_sales_files(target)
-    if has_files and not refresh and drive_cache_is_fresh(target):
+    if has_files and not refresh:
         return target
 
     try:
@@ -267,6 +267,13 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
         )
 
     def download_by_id(file_id: str, output: Path, label: str) -> None:
+        normalized = normalized_drive_filename(output.name)
+        historical = "VENTA" in normalized and "DIARIA" not in normalized.replace(" ", "")
+        previous = target / output.name
+        if historical and previous.exists() and previous.stat().st_size > 0:
+            shutil.copy2(previous, output)
+            downloaded_ids.add(file_id)
+            return
         try:
             gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
             if output.exists() and output.stat().st_size > 0:
@@ -280,6 +287,8 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     try:
         if google_drive_folder_id(url) == google_drive_folder_id(DEFAULT_DRIVE_URL):
             for local_name, file_id in DEFAULT_DRIVE_FILE_IDS.items():
+                if "DIARIA" in normalized_drive_filename(local_name).replace(" ", ""):
+                    continue
                 download_by_id(file_id, tmp_target / local_name, local_name)
         try:
             drive_files = gdown.download_folder(url=url, output=str(tmp_target), quiet=True, use_cookies=False, skip_download=True)
