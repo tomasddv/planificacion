@@ -146,7 +146,8 @@ def parse_number(value: object) -> float:
     text = str(value).strip()
     if not text:
         return np.nan
-    text = text.replace(".", "").replace(",", ".")
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")
     return float(pd.to_numeric(text, errors="coerce"))
 
 
@@ -399,7 +400,7 @@ def apply_drive_objectives(planning: pd.DataFrame, objectives: pd.DataFrame) -> 
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def load_sales_from_drive(drive_url: str, refresh_nonce: float = 0.0) -> tuple[pd.DataFrame, str]:
+def load_sales_from_drive(drive_url: str, refresh_nonce: float = 0.0, parser_version: int = sales_app.NORMALIZATION_VERSION) -> tuple[pd.DataFrame, str]:
     folder = resolve_google_drive_folder(drive_url, force_refresh=refresh_nonce > 0)
     if folder is None:
         return pd.DataFrame(), ""
@@ -449,7 +450,7 @@ def focus_sales(sales: pd.DataFrame, focus: str) -> pd.DataFrame:
 
 def sales_metrics(sales: pd.DataFrame, focus: str, selected_date: pd.Timestamp) -> pd.DataFrame:
     if sales.empty:
-        return pd.DataFrame(columns=["promotor", "real", "media_real", "acum_ant"])
+        return pd.DataFrame(columns=["promotor", "real", "media_real", "acum_actual", "acum_ant"])
     selected_date = pd.Timestamp(selected_date).normalize()
     df = focus_sales(sales, focus)
     real = (

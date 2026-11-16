@@ -100,7 +100,8 @@ def parse_number(value):
     text = clean_text(value)
     if not text:
         return 0.0
-    text = text.replace(".", "").replace(",", ".")
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")
     try:
         return float(text)
     except ValueError:
