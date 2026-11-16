@@ -231,7 +231,7 @@ def resolve_google_drive_folder(secret_name: str, folder_name: str, force_refres
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or truthy(secret_or_env("FORCE_GDRIVE_REFRESH", "false"))
     has_files = has_sales_files(target)
-    if has_files and not refresh:
+    if has_files and exact_daily_files_in_folder(target) and not refresh:
         return target
 
     try:
@@ -720,10 +720,7 @@ def latest_daily_file_in_folder(folder: Path) -> Path | None:
     ] if folder.exists() else []
     if compact_daily:
         return max(compact_daily, key=lambda path: path.stat().st_mtime)
-    preferred = latest_matching_file(folder, ("venta",), ("anual", "bulto", "bultos"))
-    if preferred is not None:
-        return preferred
-    return latest_matching_file(folder, tuple(), ("anual", "bulto", "bultos"))
+    return None
 
 
 def month_period_from_filename(path: Path) -> pd.Period | None:
@@ -3338,7 +3335,8 @@ def main() -> None:
     data_dir = current_data_dir(force_refresh=bool(st.session_state.get("force_data_refresh", False)))
     st.session_state["force_data_refresh"] = False
     st.sidebar.caption(f"Carpeta automatica: {data_dir}")
-    actual_sales_file = latest_daily_file_in_folder(data_dir)
+    actual_files = exact_daily_files_in_folder(data_dir)
+    actual_sales_file = max(actual_files, key=lambda path: path.stat().st_mtime) if actual_files else None
     closed_sales_files = closed_sales_files_in_folder(data_dir, actual_sales_file)
     closed_period_options = {closed_period_label(path): path for path in closed_sales_files}
     period_choice = st.sidebar.selectbox(
