@@ -1237,13 +1237,13 @@ def load_customer_channels(
 
     customers = customers[customers.get("Cliente").notna()].copy()
     customers = customers[customers["Cliente"].astype(str).str.upper() != "ENTERO"]
-    customers["cliente_codigo"] = pd.to_numeric(customers["Cliente"], errors="coerce").astype("Int64").astype("string")
-    customers["lista_precio_codigo"] = pd.to_numeric(customers.get("Lista de precios"), errors="coerce").astype("Int64").astype("string")
-    customers["subcanal_mkt_codigo"] = pd.to_numeric(customers.get("Subcanal MKT"), errors="coerce").astype("Int64").astype("string")
+    customers["cliente_codigo"] = integer_code_strings(customers["Cliente"])
+    customers["lista_precio_codigo"] = integer_code_strings(customers.get("Lista de precios"))
+    customers["subcanal_mkt_codigo"] = integer_code_strings(customers.get("Subcanal MKT"))
 
     if not price_lists.empty and {"Código", "Descripción"}.issubset(price_lists.columns):
         price_lists = price_lists[price_lists["Código"].notna()].copy()
-        price_lists["lista_precio_codigo"] = pd.to_numeric(price_lists["Código"], errors="coerce").astype("Int64").astype("string")
+        price_lists["lista_precio_codigo"] = integer_code_strings(price_lists["Código"])
         price_lists = price_lists[["lista_precio_codigo", "Descripción"]].rename(
             columns={"Descripción": "lista_precio_descripcion"}
         )
@@ -1253,7 +1253,7 @@ def load_customer_channels(
 
     if not hierarchy.empty and {"Código", "Segmento MKT", "Canal MKT", "Subcanal MKT"}.issubset(hierarchy.columns):
         hierarchy = hierarchy[hierarchy["Código"].notna()].copy()
-        hierarchy["subcanal_mkt_codigo"] = pd.to_numeric(hierarchy["Código"], errors="coerce").astype("Int64").astype("string")
+        hierarchy["subcanal_mkt_codigo"] = integer_code_strings(hierarchy["Código"])
         hierarchy = hierarchy[
             ["subcanal_mkt_codigo", "Segmento MKT", "Canal MKT", "Subcanal MKT"]
         ].rename(
@@ -1290,11 +1290,17 @@ def load_customer_channels(
     return result, info
 
 
+def integer_code_strings(values: pd.Series) -> pd.Series:
+    numbers = pd.to_numeric(values, errors="coerce")
+    valid = numbers.notna() & np.isfinite(numbers) & numbers.mod(1).eq(0)
+    return numbers.where(valid).astype("Int64").astype("string")
+
+
 def apply_customer_channels(df: pd.DataFrame, customer_channels: pd.DataFrame | None) -> pd.DataFrame:
     if customer_channels is None or customer_channels.empty or "cliente_codigo" not in df.columns:
         return df
     result = df.copy()
-    result["cliente_codigo"] = pd.to_numeric(result["cliente_codigo"], errors="coerce").astype("Int64").astype("string")
+    result["cliente_codigo"] = integer_code_strings(result["cliente_codigo"])
     result = result.merge(customer_channels, on="cliente_codigo", how="left")
     result["canal"] = result["canal_maestro"].fillna("NO")
     result["lista_precio_descripcion"] = result["lista_precio_descripcion"].fillna("Sin lista")
