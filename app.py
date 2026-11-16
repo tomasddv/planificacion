@@ -99,7 +99,7 @@ PLANNER_SHEET_NAME = "planificador_diario"
 PLANNER_COLUMNS = ["fecha", "foco", "promotor", "planificado"]
 WINDOWS = (7, 14, 21, 28)
 EXACT_MONTH_LOOKBACKS = (1, 2, 3)
-NORMALIZATION_VERSION = 4
+NORMALIZATION_VERSION = 5
 CUSTOMER_CHANNEL_VERSION = 2
 SEGMENT_VERSION = 1
 COMBO_HL_FILE_NAME = "combo_hectolitros.csv"
@@ -3341,6 +3341,19 @@ def main() -> None:
     st.sidebar.caption(f"Carpeta automatica: {data_dir}")
     actual_files = exact_daily_files_in_folder(data_dir)
     actual_sales_file = max(actual_files, key=lambda path: path.stat().st_mtime) if actual_files else None
+    if actual_sales_file is None:
+        try:
+            direct_url = "https://drive.google.com/uc?export=download&id=" + DEFAULT_DRIVE_FILE_IDS["ventadiaria.txt"]
+            with urllib.request.urlopen(direct_url, timeout=45) as response:
+                content = response.read()
+            if b"\t" not in content[:4096] or b"<html" in content[:4096].lower():
+                raise ValueError("Drive no devolvio un TXT de venta valido")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            recovery_path = data_dir / "ventadiaria.txt"
+            recovery_path.write_bytes(content)
+            actual_sales_file = recovery_path
+        except Exception as exc:
+            st.error(f"No pude descargar ventadiaria.txt de Drive: {exc}")
     closed_sales_files = closed_sales_files_in_folder(data_dir, actual_sales_file)
     closed_period_options = {closed_period_label(path): path for path in closed_sales_files}
     period_choice = st.sidebar.selectbox(
