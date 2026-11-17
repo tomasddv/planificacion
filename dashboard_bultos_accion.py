@@ -1224,7 +1224,7 @@ def main() -> None:
     st.markdown(
         """
         <div class="hero">
-            <h1>Control bultos Core / Value</h1>
+            <h1>📦 Control bultos Core / Value</h1>
             <p>Seguimiento por cliente contra tope de accion: K+T 200 bultos y AS 500 bultos.</p>
         </div>
         """,
@@ -1239,7 +1239,7 @@ def main() -> None:
     drive_url = sales_app.secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
     sheet_url = extensions_sheet_url()
     webapp_url = extensions_webapp_url()
-    if st.sidebar.button("Actualizar datos", width="stretch"):
+    if st.sidebar.button("Actualizar datos", type="primary", width="stretch"):
         st.session_state["bultos_drive_refresh"] = time.time()
         st.cache_data.clear()
 

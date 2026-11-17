@@ -802,7 +802,7 @@ def main() -> None:
     st.markdown(
         """
         <div class="hero">
-            <h1>Control de frescura</h1>
+            <h1>📦 Control de frescura</h1>
             <p>Productos por ciudad, fecha de vencimiento y estado de accion.</p>
         </div>
         """,
@@ -813,7 +813,7 @@ def main() -> None:
     if "frescura_refresh" not in st.session_state:
         st.session_state["frescura_refresh"] = 0.0
     drive_url = sales_app.secret_or_env("GOOGLE_DRIVE_PLANIFICACION_URL", DEFAULT_DRIVE_URL)
-    if st.sidebar.button("Actualizar datos", width="stretch"):
+    if st.sidebar.button("Actualizar datos", type="primary", width="stretch"):
         st.session_state["frescura_refresh"] = time.time()
         st.cache_data.clear()
 

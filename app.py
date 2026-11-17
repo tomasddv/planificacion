@@ -3324,7 +3324,7 @@ def main() -> None:
     st.markdown(
         """
         <div class="hero">
-            <h1>Venta diaria HL</h1>
+            <h1>📊 Venta diaria HL</h1>
             <p>Analisis comercial con ventanas habiles, planificacion por percentiles y comparacion mensual.</p>
         </div>
         """,
@@ -3335,7 +3335,7 @@ def main() -> None:
     st.sidebar.link_button("Ir al planificador", secret_or_env("SMALL_DASH_URL", SMALL_DASH_URL), width="stretch")
     if "force_data_refresh" not in st.session_state:
         st.session_state["force_data_refresh"] = False
-    if st.sidebar.button("Actualizar datos", width="stretch"):
+    if st.sidebar.button("Actualizar datos", type="primary", width="stretch"):
         st.session_state["force_data_refresh"] = True
         st.cache_data.clear()
         st.rerun()

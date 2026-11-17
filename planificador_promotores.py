@@ -1215,7 +1215,7 @@ def main() -> None:
     st.markdown(
         """
         <div class="hero">
-            <h1>Planificador de promotores</h1>
+            <h1>🎯 Planificador de promotores</h1>
             <p>Carga diaria de planificado por foco. El Google Sheet queda como base para que cualquier PC vea el mismo dato desde el dashboard.</p>
         </div>
         """,
@@ -1231,7 +1231,7 @@ def main() -> None:
     st.sidebar.link_button("Ir al dash de ventas", big_dash_url, width="stretch")
     if "drive_refresh_nonce" not in st.session_state:
         st.session_state["drive_refresh_nonce"] = 0.0
-    if st.sidebar.button("Actualizar Drive y Sheet", width="stretch"):
+    if st.sidebar.button("Actualizar Drive y Sheet", type="primary", width="stretch"):
         st.session_state["drive_refresh_nonce"] = time.time()
         st.cache_data.clear()
         st.sidebar.success("Actualizando desde Drive y Sheet...")
