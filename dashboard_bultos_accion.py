@@ -1218,6 +1218,8 @@ def render_extension_manager(summary: pd.DataFrame, webapp_url: str) -> None:
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon=page_icon(), layout="wide")
     inject_style()
+    from command_theme import apply_theme
+    apply_theme()
 
     st.markdown(
         """
@@ -1250,7 +1252,6 @@ def main() -> None:
         folder = fallback_data_folder()
     st.sidebar.caption(f"Drive: {drive_url}")
     st.sidebar.caption("Extensiones: Google Sheet")
-    st.sidebar.caption(f"Carpeta usada: {folder if folder else 'sin carpeta'}")
 
     uploaded_file = st.sidebar.file_uploader("Carga manual ventadiaria bultos", type=["txt", "csv"])
     source_path = latest_bultos_file(folder)

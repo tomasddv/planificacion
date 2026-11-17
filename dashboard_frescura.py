@@ -797,6 +797,8 @@ def export_excel(products: pd.DataFrame, lots: pd.DataFrame) -> bytes:
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon=":calendar:", layout="wide")
     inject_style()
+    from command_theme import apply_theme
+    apply_theme()
     st.markdown(
         """
         <div class="hero">
@@ -817,7 +819,6 @@ def main() -> None:
 
     folder = prepare_drive_sources(drive_url, force_refresh=bool(st.session_state.pop("frescura_refresh", 0.0)))
     files = template_files(folder)
-    st.sidebar.caption(f"Carpeta usada: {folder if folder else 'Downloads/local'}")
     if files:
         st.sidebar.success("Archivos: " + ", ".join(path.name for path in files))
 

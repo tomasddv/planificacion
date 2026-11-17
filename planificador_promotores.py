@@ -1210,6 +1210,8 @@ def page_style() -> None:
 
 def main() -> None:
     page_style()
+    from command_theme import apply_theme
+    apply_theme()
     st.markdown(
         """
         <div class="hero">

@@ -2466,7 +2466,8 @@ def chart_layout(fig):
         tickfont=dict(color="#0f172a"),
     )
     fig.update_coloraxes(colorbar=dict(tickfont=dict(color="#0f172a"), title_font=dict(color="#0f172a")))
-    return fig
+    from command_theme import style_chart
+    return style_chart(fig)
 
 
 def daily_business(df: pd.DataFrame, business: str) -> pd.DataFrame:
@@ -3318,6 +3319,8 @@ def build_planner_pdf(tables: list[tuple[str, str, pd.DataFrame]], selected_date
 
 def main() -> None:
     page_setup()
+    from command_theme import apply_theme
+    apply_theme()
     st.markdown(
         """
         <div class="hero">
@@ -3338,7 +3341,6 @@ def main() -> None:
         st.rerun()
     data_dir = current_data_dir(force_refresh=bool(st.session_state.get("force_data_refresh", False)))
     st.session_state["force_data_refresh"] = False
-    st.sidebar.caption(f"Carpeta automatica: {data_dir}")
     actual_files = exact_daily_files_in_folder(data_dir)
     actual_sales_file = max(actual_files, key=lambda path: path.stat().st_mtime) if actual_files else None
     if actual_sales_file is None:
@@ -3529,8 +3531,6 @@ def main() -> None:
     st.sidebar.success(f"Fuente: {info.label}")
     if info.modified:
         st.sidebar.caption(f"Modificado: {info.modified}")
-    if info.path:
-        st.sidebar.caption(info.path)
     if customer_info is not None:
         st.sidebar.success(f"Clientes: {customer_info.label}")
         if customer_info.modified:
