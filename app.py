@@ -2410,10 +2410,11 @@ def build_daily_planner_table(
 
 
 def metric_card(title: str, value: str, sub: str, accent: str = "blue") -> None:
+    icon = next((icon for word, icon in [("mediana", "📐"), ("promedio", "📊"), ("min", "🎯"), ("max", "🚀"), ("vendido", "📅")] if word in title.lower()), "📦")
     st.markdown(
         f"""
         <div class="metric-card accent-{accent}">
-            <div class="metric-title">{title}</div>
+            <div class="metric-title"><span class="metric-icon">{icon}</span>{title}</div>
             <div class="metric-value">{value}</div>
             <div class="metric-sub">{sub}</div>
         </div>
@@ -2424,12 +2425,16 @@ def metric_card(title: str, value: str, sub: str, accent: str = "blue") -> None:
 
 def business_card(title: str, value: float, total: float, class_name: str) -> None:
     share = (value / total * 100) if total else np.nan
+    icon = "🍺" if "CZA" in title.upper() or "CERVEZA" in title.upper() else "🥤"
+    width = max(0.0, min(100.0, float(share))) if pd.notna(share) else 0.0
     st.markdown(
         f"""
         <div class="business-card {class_name}">
+            <div class="business-illustration" aria-hidden="true">{icon}</div>
             <div class="business-title">{title}</div>
             <div class="business-value">{format_hl(value)}</div>
             <div class="business-sub">{format_pct(share).replace("+", "")} del HL del dia seleccionado</div>
+            <div class="business-track"><div style="width:{width}%"></div></div>
         </div>
         """,
         unsafe_allow_html=True,

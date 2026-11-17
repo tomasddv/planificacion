@@ -16,6 +16,20 @@
 [data-testid="stMetricValue"] { font-size:32px!important; font-weight:750; }
 .kpi-card .label,.metric-card .label,.card .label,.metric-title,.metric-sub { color:var(--cc-muted)!important; }
 .metric-value { font-size:32px!important; line-height:1.2; overflow-wrap:anywhere; }
+.stApp .metric-card{padding:16px!important;min-height:154px;}
+.stApp .metric-title{display:flex;align-items:center;gap:8px;min-height:36px;font-size:12px;line-height:1.3;}
+.stApp .metric-icon{display:inline-flex;align-items:center;justify-content:center;background:#EEF4FF;color:#101828!important;width:34px;height:34px;flex:0 0 34px;border-radius:8px;font-size:23px;}
+.stApp .business-card{position:relative;min-height:180px;overflow:hidden;padding:22px!important;background:linear-gradient(110deg,#E7F3FF,#F1F8FF)!important;border:1px solid #CEE4FF!important;box-shadow:0 6px 16px #145CFF12!important;}
+.stApp .business-card:nth-child(1){border-top-color:#145CFF!important;}
+.stApp .business-card *{color:#101828!important;}
+.stApp .business-card .business-title{font-size:15px!important;font-weight:800!important;max-width:70%;}
+.stApp .business-card .business-value{font-size:40px!important;font-weight:850!important;line-height:1.2!important;}
+.stApp .business-card .business-sub{font-size:14px!important;font-weight:650!important;max-width:70%;}
+.stApp .business-card .business-illustration{position:absolute;right:24px;top:20px;font-size:80px;line-height:1.2;}
+.stApp .business-track{height:12px;background:#D8E3F2!important;border-radius:8px;margin-top:18px;overflow:hidden;}
+.stApp .business-track>div{height:100%;background:#145CFF!important;border-radius:8px;}
+.stApp .business-card.business-ung{background:linear-gradient(110deg,#F6EEFF,#F2EDFF)!important;}
+.stApp .business-card.business-ung .business-track>div{background:#9333EA!important;}
 .business-card { background:var(--cc-panel)!important; color:var(--cc-text)!important; border:1px solid var(--cc-line)!important; border-radius:6px!important; }
 .stApp [data-testid="stMarkdownContainer"] table { background:var(--cc-panel)!important; }
 .stApp .stButton button,.stApp .stDownloadButton button,.stApp .stLinkButton a { border-radius:6px!important; border:1px solid var(--cc-line)!important; background:var(--cc-panel)!important; color:var(--cc-text)!important; transition:border-color .15s,box-shadow .15s; }
