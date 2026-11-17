@@ -45,6 +45,9 @@ input,textarea,[contenteditable="true"] { background:var(--cc-panel)!important; 
 [data-testid="stTabs"] button[aria-selected="true"] p { color:var(--cc-accent)!important; }
 .exec-wrap,.table-wrap,.table-container { background:transparent!important; border:1px solid var(--cc-line)!important; border-radius:6px!important; box-shadow:none!important; overflow-x:auto; }
 .exec-title { color:var(--cc-text)!important; }
+.stApp table.exec-table tbody tr td:first-child,.stApp table.planner-table tbody tr td:first-child { color:#101828!important; background:#E8F0FF!important; font-weight:800!important; }
+.stApp table.exec-table tbody tr.total-row td:first-child,.stApp table.planner-table tbody tr.total-row td:first-child { color:#FFFFFF!important; background:#145CFF!important; }
+.stApp table.exec-table tbody tr td:first-child *,.stApp table.planner-table tbody tr td:first-child * { color:inherit!important; }
 .stApp table { color:var(--cc-text)!important; font-variant-numeric:tabular-nums; }
 .stApp table th { background:#E8F0FF!important; color:var(--cc-text)!important; border-color:var(--cc-line)!important; }
 .stApp table td { background:var(--cc-panel)!important; color:var(--cc-text)!important; border-color:var(--cc-line)!important; }
