@@ -19,7 +19,10 @@ def code(values):
 
 
 def number(values):
-    return pd.to_numeric(values.astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False), errors="coerce")
+    text = values.astype(str).str.strip()
+    comma = text.str.contains(",", regex=False, na=False)
+    text = text.where(~comma, text.str.replace(".", "", regex=False).str.replace(",", ".", regex=False))
+    return pd.to_numeric(text, errors="coerce")
 
 
 def prepare_sales(raw, parse_dates):

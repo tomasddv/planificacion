@@ -156,7 +156,7 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         return None
     target = PROJECT_ROOT / ".cloud_data" / folder_name
     refresh = force_refresh or str(secret_or_env("FORCE_GDRIVE_REFRESH", "false")).lower() in {"1", "true", "si", "sí", "yes"}
-    if sales_app.has_sales_files(target) and not refresh and drive_cache_is_fresh(target):
+    if sales_app.has_sales_files(target) and (target / "REPORTE DE CLIENTES.xlsx").exists() and not refresh and drive_cache_is_fresh(target):
         return target
     try:
         import gdown
@@ -193,6 +193,15 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         if not file_id or file_id in downloaded_ids:
             return
         try:
+            with urllib.request.urlopen("https://drive.google.com/uc?export=download&id=" + file_id, timeout=25) as response:
+                content = response.read()
+            if content and b"<html" not in content[:4096].lower():
+                output.write_bytes(content)
+                downloaded_ids.add(file_id)
+                return
+        except Exception:
+            pass
+        try:
             gdown.download(id=file_id, output=str(output), quiet=True, use_cookies=False)
             if output.exists() and output.stat().st_size > 0:
                 downloaded_ids.add(file_id)
@@ -203,6 +212,8 @@ def resolve_google_drive_folder(url: str, folder_name: str = "planificacion", fo
         if sales_app.google_drive_folder_id(url) == sales_app.google_drive_folder_id(sales_app.DEFAULT_DRIVE_URL):
             download_by_id(secret_or_env("COMBOS_GRUPOS_DRIVE_ID", ""), download_target / "combos_grupos.csv")
             for local_name, file_id in PLANIFICADOR_DRIVE_FILE_IDS.items():
+                if "venta " in local_name.lower():
+                    continue
                 if local_name in {"ventadiaria.txt", "OBJETIVOS.xlsx", "REPORTE DE CLIENTES.xlsx"}:
                     continue
                 download_by_id(file_id, download_target / local_name)
