@@ -1212,6 +1212,7 @@ def main() -> None:
     page_style()
     from command_theme import apply_theme
     apply_theme()
+    st.markdown((PROJECT_ROOT / "planner_color.css").read_text(encoding="utf-8"), unsafe_allow_html=True)
     st.markdown(
         """
         <div class="hero">
@@ -1304,7 +1305,8 @@ def main() -> None:
     tabs = st.tabs(FOCUS_ORDER)
     for tab, focus in zip(tabs, FOCUS_ORDER):
         with tab:
-            st.subheader(focus)
+            focus_icon = {"TOTAL CERVEZAS": "🍺", "VOLUMEN ABOVE CORE": "💎", "TOTAL UNG": "🥤", "AGUAS": "💧"}.get(focus, "🎯")
+            st.markdown(f'<div class="focus-banner"><span>{focus_icon}</span>{focus}</div>', unsafe_allow_html=True)
             focus_df = planning[planning["foco"].eq(focus)].copy()
             if focus_df.empty:
                 st.info("No hay promotores para este foco.")
