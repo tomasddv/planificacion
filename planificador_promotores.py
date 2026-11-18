@@ -1212,7 +1212,6 @@ def main() -> None:
     page_style()
     from command_theme import apply_theme
     apply_theme()
-    st.markdown((PROJECT_ROOT / "planner_color.css").read_text(encoding="utf-8"), unsafe_allow_html=True)
     st.markdown(
         """
         <div class="hero">

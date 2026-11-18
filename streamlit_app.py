@@ -222,6 +222,8 @@ def render_filters(df):
 
 
 st.title("EDF Repago")
+from command_theme import apply_theme
+apply_theme()
 st.caption("Dashboard operativo by QπU")
 
 with st.sidebar:

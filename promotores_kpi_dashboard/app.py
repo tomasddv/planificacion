@@ -1604,6 +1604,8 @@ def period_controls(prefix: str, fechas_venta: list, aux_path: str):
     return period_type, sales_source, start_date, end_date, label
 
 
+from command_theme import apply_theme
+apply_theme()
 st.title("Dashboard Promotores")
 
 with st.sidebar:

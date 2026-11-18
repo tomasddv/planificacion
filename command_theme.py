@@ -10,6 +10,7 @@ PALETTE = dict(background="#F3F7FC", panel="#FFFFFF", cyan="#145CFF",
 
 def apply_theme():
     st.markdown((Path(__file__).parent / "command_theme.css").read_text(encoding="utf-8"), unsafe_allow_html=True)
+    st.markdown((Path(__file__).parent / "planner_color.css").read_text(encoding="utf-8"), unsafe_allow_html=True)
     asset = Path(__file__).parent / "distribuidora_del_valle_truck.png"
     if asset.exists():
         encoded = base64.b64encode(asset.read_bytes()).decode("ascii")

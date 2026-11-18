@@ -34,5 +34,17 @@
 .stApp table.progress-table td.good{background:#DCFCE7!important;color:#166534!important;}
 .stApp table.progress-table td.bad{background:#FFE4E6!important;color:#9F1239!important;}
 .stApp .stButton button{border-color:#B7A2EE!important;}
+.stApp .metric-card.accent-blue,.stApp .kpi-card{background:#B3FBFF!important;border-top-color:#00CEDD!important;}
+.stApp .metric-card.accent-violet,.stApp .metric-card.accent-purple{background:#F6C1FF!important;border-top-color:#EE00DF!important;}
+.stApp .metric-card.accent-green{background:#A6FFDE!important;border-top-color:#00B779!important;}
+.stApp .metric-card.accent-orange{background:#F0FF83!important;border-top-color:#B2D000!important;}
+.stApp .metric-card.accent-red{background:#DECAFF!important;border-top-color:#A12AFF!important;}
+.stApp .business-card.business-cza{background:#B3FBFF!important;border-color:#00CEDD!important;}
+.stApp .business-card.business-ung{background:#F6C1FF!important;border-color:#EE00DF!important;}
+.stApp .business-card.business-cza .business-track>div{background:#00B3CD!important;}
+.stApp .business-card.business-ung .business-track>div{background:#BD00D6!important;}
+.stApp table.exec-table th,.stApp table.planner-table th{background:#7B00D4!important;color:#FFFFFF!important;}
+.stApp table.exec-table tbody tr td:first-child,.stApp table.planner-table tbody tr td:first-child{background:#DFFFA4!important;color:#283900!important;}
+.stApp table.exec-table tbody tr.total-row td:first-child,.stApp table.planner-table tbody tr.total-row td:first-child{background:#7B00D4!important;color:#FFFFFF!important;}
 @media(max-width:760px){.focus-banner{font-size:17px;}[data-testid="stTabs"] [role="tab"]{padding:8px 10px;flex:1 1 140px;}[data-testid="stTabs"] [role="tab"] p{font-size:12px;}}
 </style>
