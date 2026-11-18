@@ -70,4 +70,8 @@ section[data-testid="stSidebar"] span,section[data-testid="stSidebar"] div { col
 @media(max-width:760px) { .hero{background-size:64px!important;background-position:right 10px top 12px!important;padding:18px!important;}.hero h1{padding-right:64px;}.hero p{padding-top:8px;} }
 @media(max-width:760px) { .block-container{padding:1rem;} .hero h1{font-size:24px!important;} [data-testid="stHorizontalBlock"]{flex-wrap:wrap;} [data-testid="stColumn"]{min-width:min(100%,260px)!important;flex:1 1 260px!important;} [data-testid="stMetricValue"]{font-size:28px!important;} }
 @media(prefers-reduced-motion:reduce) { *{transition:none!important;} }
+/* Portaled select tooltips live outside .stApp. Keep the entire surface readable. */
+body [data-baseweb="tooltip"],body [data-baseweb="tooltip"] *,body [role="tooltip"],body [role="tooltip"] *,body [data-testid="stTooltipContent"],body [data-testid="stTooltipContent"] * { color:#101828!important;background-color:#FFFFFF!important;white-space:normal!important;overflow-wrap:anywhere!important;text-overflow:clip!important; }
+body [data-baseweb="tooltip"],body [role="tooltip"],body [data-testid="stTooltipContent"] { max-width:min(560px,calc(100vw - 32px))!important;width:max-content!important;height:auto!important;max-height:60vh!important;overflow-y:auto!important;line-height:1.5!important;border:1px solid #B6C5DF!important;border-radius:6px;box-shadow:0 6px 20px #172B4D26; }
+body [role="listbox"] [role="option"],body [role="listbox"] [role="option"] * { white-space:normal!important;overflow-wrap:anywhere!important;text-overflow:clip!important;line-height:1.45!important;height:auto!important; }
 </style>
