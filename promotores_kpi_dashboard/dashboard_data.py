@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from promotores_kpi_dashboard.combo_catalog import component_sales
+
 
 SUPERVISORES = {
     "GASTON FABRE": "ISMAEL BRUNO",
@@ -572,8 +574,17 @@ def filter_sales(ventas: pd.DataFrame, fecha, filter_type: str, filter_value: st
     return filtered[filtered[field].fillna("").eq(filter_value)]
 
 
-def focus_sales(ventas: pd.DataFrame, focus: str):
+def focus_sales(ventas: pd.DataFrame, focus: str, include_components: bool = True):
     filtered = ventas.copy()
+    component_codes = set()
+    if include_components and focus != "Eficiencia de ventas":
+        components = component_sales()
+        matching_components = focus_sales(components, focus, include_components=False)
+        component_codes = set(matching_components["codigo"])
+
+    def with_components(mask):
+        return filtered[mask | filtered["articulo_codigo"].astype(str).isin(component_codes)]
+
     marca = brand_upper(filtered)
     search_text = filtered.get("sku_search_text", pd.Series("", index=filtered.index)).fillna("").str.upper()
     cza = filtered["division"].eq("CERVEZAS")
@@ -591,7 +602,7 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
     )
     balanced = marca.isin(BALANCED_BRANDS)
     if focus == "Total CZA":
-        return filtered[cza | beer_combo]
+        return with_components(cza | beer_combo)
     if focus == "Core":
         core = (
             marca.eq("BRAHMA")
@@ -602,29 +613,30 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
                 & ~balanced
             )
         )
-        return filtered[cza & core]
+        return with_components(cza & core)
     if focus == "Value":
-        return filtered[cza & marca.eq("QUILMES 1890")]
+        return with_components(cza & marca.eq("QUILMES 1890"))
     if focus == "Above Core":
         above_core = (
             marca.str.startswith("STELLA ARTOIS")
             | marca.str.startswith("ANDES ORIGEN")
         ) & ~balanced
-        return filtered[cza & above_core]
+        return with_components(cza & above_core)
     if focus == "Premium":
         premium = (
             marca.str.startswith("CORONA")
             | marca.str.startswith("PATAGONIA")
         ) & ~balanced
-        return filtered[cza & premium]
+        return with_components(cza & premium)
     if focus == "Latones 710":
-        return filtered[
+        return with_components(
             filtered["calibre_unificado"].eq("LATON 710 CC")
+            | filtered["calibre_unificado"].str.contains(r"\b710\b", regex=True, na=False)
             | latones_combo
             | filtered["articulo_codigo"].isin(MICHELOB_710_COMBO_CODES)
-        ]
+        )
     if focus == "Balanced Choices":
-        return filtered[cza & balanced]
+        return with_components(cza & balanced)
     if focus == "Nabs":
         nabs_divisions = {"AGUAS", "BEB ENERGIZANTES", "BEBIDAS SABORIZADAS", "GASEOSAS", "ISOTONICAS"}
         nabs_combo = combo & search_text.str.contains(
@@ -633,7 +645,7 @@ def focus_sales(ventas: pd.DataFrame, focus: str):
             regex=True,
             na=False,
         )
-        return filtered[filtered["division"].isin(nabs_divisions) | nabs_combo]
+        return with_components(filtered["division"].isin(nabs_divisions) | nabs_combo)
     if focus == "Eficiencia de ventas":
         return filtered
     return filtered

@@ -4,16 +4,17 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
+from promotores_kpi_dashboard.combo_catalog import component_sales
 
 
 APP_FILE = Path(__file__).resolve().parents[1] / "promotores_kpi_dashboard" / "app.py"
-FUNCTIONS = {"sku_269_mask", "sku_selection_mask", "selected_combo_descriptions"}
+FUNCTIONS = {"sku_269_mask", "sku_selection_mask", "selected_combo_descriptions", "water_combo_mask", "beer_combo_mask", "nabs_combo_mask", "latones_combo_mask"}
 tree = ast.parse(APP_FILE.read_text(encoding="utf-8"))
 module = ast.Module(
     body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in FUNCTIONS],
     type_ignores=[],
 )
-namespace = {"pd": pd, "re": re, "COMBO_OPTION_PREFIX": "COMBO/PROMO: "}
+namespace = {"pd": pd, "re": re, "COMBO_OPTION_PREFIX": "COMBO/PROMO: ", "component_sales": component_sales}
 exec(compile(module, str(APP_FILE), "exec"), namespace)
 
 
@@ -33,6 +34,19 @@ class Sku269Tests(unittest.TestCase):
         expected = [True, True, True, False, False, False]
         self.assertEqual(namespace["sku_269_mask"](sales).tolist(), expected)
         self.assertEqual(namespace["sku_selection_mask"](sales, ["269 TODOS"]).tolist(), expected)
+
+    def test_confirmed_combo_components_match_brand_and_caliber(self):
+        sales = pd.DataFrame({
+            "articulo_codigo": ["900503", "900505", "900999"],
+            "articulo_descripcion": ["PROMO SIN DETALLE"] * 3,
+            "producto": ["PROMO SIN DETALLE"] * 3,
+            "marca": [""] * 3,
+            "marca_unificada": [""] * 3,
+            "sku_search_text": ["PROMO SIN DETALLE"] * 3,
+        })
+        select = namespace["sku_selection_mask"]
+        self.assertEqual(select(sales, ["PURE GOLD TODOS"]).tolist(), [True, False, False])
+        self.assertEqual(select(sales, ["RED BULL TODOS"]).tolist(), [False, True, False])
 
 
 if __name__ == "__main__":

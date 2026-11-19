@@ -36,6 +36,8 @@ from promotores_kpi_dashboard.dashboard_data import (
     summarize,
     trend_by_focus,
 )
+from promotores_kpi_dashboard.chat_queries import asks_for_unsupported_period, classify_question, find_focus, find_named_entity, find_person, find_sku, is_route_question
+from promotores_kpi_dashboard.combo_catalog import component_sales
 
 
 DEFAULT_DATA_DIR = r"C:\Users\triesgo\Desktop\CCC"
@@ -1107,7 +1109,7 @@ def sku_269_mask(ventas_df: pd.DataFrame):
     return beer_269 | combo_269
 
 
-def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
+def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str], include_components: bool = True):
     product = ventas_df["producto"].fillna("")
     brand = ventas_df["marca"].fillna("").str.upper()
     unified_brand = ventas_df.get("marca_unificada", pd.Series("", index=ventas_df.index)).fillna("").str.upper()
@@ -1249,6 +1251,11 @@ def sku_selection_mask(ventas_df: pd.DataFrame, selected_skus: list[str]):
                     pure_gold_base
                     & search_text.str.contains("473|L473|LATA|LATAS|CAN", regex=True, na=False)
                 )
+    if include_components and selected_skus:
+        components = component_sales()
+        component_matches = sku_selection_mask(components, selected_skus, include_components=False)
+        combo_codes = components.loc[component_matches, "codigo"]
+        mask = mask | ventas_df["articulo_codigo"].astype(str).isin(combo_codes)
     return mask
 
 
@@ -1656,11 +1663,115 @@ route_options = ["Todas"] + route_groups
 
 view = st.radio(
     "Vista",
-    ["Acumulado mensual", "Acumulado promotores", "Planificación diaria", "No compradores", "No compradores SKU", "Clientes con compra", "Gestión CNC"],
+    ["Acumulado mensual", "Acumulado promotores", "Planificación diaria", "No compradores", "No compradores SKU", "Clientes con compra", "Gestión CNC", "Asistente"],
     horizontal=True,
     label_visibility="collapsed",
     key="main_view",
 )
+
+if view == "Asistente":
+    st.subheader("Asistente comercial")
+    chat_end = pd.Timestamp(max(fechas))
+    chat_start = chat_end.replace(day=1)
+    st.caption(f"Venta del {chat_start.date()} al {chat_end.date()}")
+    example_cols = st.columns(3)
+    for column, (question, label) in zip(example_cols, [
+        ("¿Cuántos clientes de Pure Gold tiene Nicastro Lucas?", "Pure Gold"),
+        ("¿Qué clientes no compraron Gatorade de Nicastro Lucas?", "No compradores"),
+        ("¿Cuántos clientes activó Nicastro Lucas el último día?", "Último día"),
+    ]):
+        if column.button(label, key=f"chat_example_{label}", use_container_width=True):
+            st.session_state["chat_pending"] = question
+
+    pending = st.session_state.pop("chat_pending", None)
+    typed = st.chat_input("Preguntá por promotor, producto y clientes")
+    prompt = typed or pending
+    if prompt:
+        context = st.session_state.get("chat_context", {}).copy()
+        detected_promoter = find_person(prompt, promotores["promotor"].dropna().unique())
+        detected_supervisor = find_person(prompt, promotores["supervisor"].dropna().unique()) if detected_promoter is None else None
+        detected_route = find_named_entity(prompt, route_groups)
+        detected_focus = find_focus(prompt)
+        detected_sku = None if detected_focus else find_sku(prompt, sku_options_for_business(ventas, "Todos"))
+        detected_intent = "route" if is_route_question(prompt) else classify_question(prompt)
+        if detected_promoter and detected_promoter != context.get("promoter"):
+            context.pop("route", None)
+            context.pop("supervisor", None)
+        if detected_supervisor and detected_supervisor != context.get("supervisor"):
+            context.pop("promoter", None)
+            context.pop("route", None)
+        if detected_promoter:
+            context["promoter"] = detected_promoter
+        if detected_supervisor:
+            context["supervisor"] = detected_supervisor
+        if detected_route:
+            context["route"] = detected_route
+        if detected_focus:
+            context["focus"] = detected_focus
+            context.pop("sku", None)
+        if detected_sku:
+            context["sku"] = detected_sku
+            context.pop("focus", None)
+        if detected_intent and detected_intent != "route":
+            context["intent"] = detected_intent
+        intent = detected_intent or context.get("intent") or ("buyers" if detected_focus or detected_sku else None)
+        promoter = context.get("promoter")
+        supervisor = context.get("supervisor")
+        route = context.get("route")
+        sku = context.get("sku")
+        focus = context.get("focus")
+        scope = apply_promoter_filter(apply_supervisor_filter(rutas_grupo, supervisor or "Todos"), promoter or "Todos")
+        if route:
+            scope = scope[scope["grupo_ruta"].eq(route)]
+        scope_name = promoter or supervisor or "todas las rutas"
+        if route:
+            scope_name += f" en {route}"
+        if asks_for_unsupported_period(prompt, chat_end.month):
+            answer, detail = "Esta versión consulta el mes de la venta diaria. Para otros cierres, usá las solapas del tablero.", None
+        elif intent is None:
+            answer, detail = "Preguntame, por ejemplo: «¿Cuántos clientes de Pure Gold tiene Nicastro Lucas?». También puedo listar no compradores y activaciones del último día.", None
+        elif intent == "route":
+            if not promoter and not supervisor:
+                answer, detail = "¿De qué promotor o supervisor querés saber las rutas?", None
+            else:
+                detail = scope[["grupo_ruta", "ruta", "promotor", "supervisor"]].drop_duplicates().sort_values(["grupo_ruta", "ruta"])
+                answer = f"{scope_name} tiene {detail['ruta'].nunique():,} rutas en la cartera cargada."
+        elif sku is None and re.search(r"\bclientes\s+de\s+.+?\s+tiene\b", prompt, flags=re.IGNORECASE):
+            answer, detail = "No identifiqué el producto. Escribí el nombre de la marca o variedad como figura en el tablero.", None
+        else:
+            if focus:
+                chat_sales = filter_sales_by_focus_purchase_range(ventas, chat_start, chat_end, focus, scope)
+            else:
+                chat_sales = filter_business_sku_purchase_range(
+                    ventas, chat_start, chat_end, "Todos", [sku] if sku else ["Todos"], scope
+                )
+            product_name = focus or sku or "cualquier producto"
+            if intent == "non_buyers":
+                missing = non_buyer_clients(chat_sales, scope, "Todas")
+                detail = missing[["cliente", "razon_social", "nombre_fantasia", "promotor", "supervisor", "grupo_ruta"]].drop_duplicates()
+                answer = (f"{len(detail):,} clientes de {scope_name} no compraron {product_name} "
+                          f"del {chat_start.date()} al {chat_end.date()}.")
+            elif intent == "last_activations":
+                activated, _ = last_day_client_activations(chat_sales, chat_end)
+                detail = activated[["cliente", "cliente_nombre", "promotor", "fecha"]].drop_duplicates("cliente") if not activated.empty else None
+                answer = (f"{0 if detail is None else len(detail):,} clientes de {scope_name} compraron {product_name} "
+                          f"por primera vez en el mes el {chat_end.date()}.")
+            else:
+                detail = chat_sales.groupby("cliente", as_index=False).agg(
+                    **{"Razón Social": ("cliente_nombre", "first"), "Primera compra": ("fecha", "min"), "Última compra": ("fecha", "max")}
+                ).rename(columns={"cliente": "Cliente"})
+                answer = (f"{len(detail):,} clientes de {scope_name} compraron {product_name} "
+                          f"del {chat_start.date()} al {chat_end.date()}.")
+        st.session_state["chat_context"] = context
+        st.session_state.setdefault("chat_history", []).append((prompt, answer, detail))
+    for question, answer, detail in st.session_state.get("chat_history", []):
+        with st.chat_message("user"):
+            st.write(question)
+        with st.chat_message("assistant"):
+            st.write(answer)
+            if detail is not None and not detail.empty:
+                st.dataframe(detail, use_container_width=True, hide_index=True)
+    st.stop()
 
 if view == "Acumulado mensual":
     month_end = pd.Timestamp(max(fechas))
