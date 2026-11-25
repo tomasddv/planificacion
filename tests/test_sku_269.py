@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 from promotores_kpi_dashboard.combo_catalog import component_sales
+from promotores_kpi_dashboard.dashboard_data import sin_alcohol_mask
 
 
 APP_FILE = Path(__file__).resolve().parents[1] / "promotores_kpi_dashboard" / "app.py"
@@ -14,7 +15,7 @@ module = ast.Module(
     body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in FUNCTIONS],
     type_ignores=[],
 )
-namespace = {"pd": pd, "re": re, "COMBO_OPTION_PREFIX": "COMBO/PROMO: ", "component_sales": component_sales}
+namespace = {"pd": pd, "re": re, "COMBO_OPTION_PREFIX": "COMBO/PROMO: ", "component_sales": component_sales, "sin_alcohol_mask": sin_alcohol_mask}
 exec(compile(module, str(APP_FILE), "exec"), namespace)
 
 
@@ -47,6 +48,17 @@ class Sku269Tests(unittest.TestCase):
         select = namespace["sku_selection_mask"]
         self.assertEqual(select(sales, ["PURE GOLD TODOS"]).tolist(), [True, False, False])
         self.assertEqual(select(sales, ["RED BULL TODOS"]).tolist(), [False, True, False])
+
+    def test_combo_900484_counts_for_sin_alcohol(self):
+        sales = pd.DataFrame({
+            "articulo_codigo": ["900484", "900999"],
+            "articulo_descripcion": ["Copia COMBO 0.0 KT (JUNIO)", "OTRO COMBO"],
+            "producto": ["", ""],
+            "marca": ["", ""],
+            "marca_unificada": ["", ""],
+            "sku_search_text": ["COPIA COMBO 0.0 KT JUNIO", "OTRO COMBO"],
+        })
+        self.assertEqual(namespace["sku_selection_mask"](sales, ["SIN ALCOHOL TODOS"]).tolist(), [True, False])
 
 
 if __name__ == "__main__":
